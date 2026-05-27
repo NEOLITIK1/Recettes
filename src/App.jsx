@@ -1,6 +1,6 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
 import Layout from './components/Layout.jsx'
-<br>import MatieresPremières from './pages/MatieresPremières.jsx'
+import MatieresPremières from './pages/MatieresPremières.jsx'
 import Recettes from './pages/Recettes.jsx'
 import Stock from './pages/Stock.jsx'
 import Optimiseur from './pages/Optimiseur.jsx'
