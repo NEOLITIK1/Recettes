@@ -42,6 +42,16 @@ export default function TooltipMp({ mp, children }) {
           {params.length === 0 && (
             <p className="text-xs text-gray-400">Aucune composition renseignée</p>
           )}
+          {(mp.recettes_autorisees ?? []).length > 0 && (
+            <div className="mt-2 pt-2 border-t border-gray-100">
+              <p className="text-xs text-gray-400 mb-1">Recettes autorisées</p>
+              <div className="flex flex-wrap gap-1">
+                {(mp.recettes_autorisees ?? []).map(rid => (
+                  <span key={rid} className="text-xs bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded">{rid}</span>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
