@@ -36,12 +36,26 @@ function optimiser(sacsDispo, mpsMap, recette, masseCible, mpsForcees = [], seed
     const mp = mpsMap[sac.mp_id]
     if (!mp) return -9999
 
-    // Distance compositionnelle
-    const dist = Math.sqrt(
-      Math.pow((mp.pct_pp ?? 0)  - recette.pct_pp_cible,  2) +
-      Math.pow((mp.pct_pe ?? 0)  - recette.pct_pe_cible,  2) +
+    // Distance compositionnelle sur TOUS les paramètres de la recette
+    // Poids doubles sur les couleurs car elles sont souvent discriminantes
+    const distPolymere = Math.sqrt(
+      Math.pow((mp.pct_pp  ?? 0) - recette.pct_pp_cible,  2) +
+      Math.pow((mp.pct_pe  ?? 0) - recette.pct_pe_cible,  2) +
       Math.pow((mp.pct_alu ?? 0) - recette.pct_alu_cible, 2)
     )
+
+    const distCouleur = Math.sqrt(
+      Math.pow(((mp.pct_blanc       ?? 0) - recette.pct_blanc_cible)       * 1.5, 2) +
+      Math.pow(((mp.pct_transparent ?? 0) - recette.pct_transparent_cible) * 1.5, 2) +
+      Math.pow(((mp.pct_noir        ?? 0) - recette.pct_noir_cible)        * 2.0, 2)
+    )
+
+    // Pénalité dure si la MP apporte du noir alors que la recette n'en veut pas
+    const penaliteNoir = (recette.pct_noir_cible ?? 0) < 5 && (mp.pct_noir ?? 0) > 10
+      ? 500
+      : 0
+
+    const dist = distPolymere + distCouleur + penaliteNoir
 
     // Pénalité si cette MP est déjà très présente (diversification)
     const masseDejaMP = selectionActuelle
@@ -51,8 +65,8 @@ function optimiser(sacsDispo, mpsMap, recette, masseCible, mpsForcees = [], seed
     const partMP = masseTotal > 0 ? masseDejaMP / masseTotal : 0
     const penaliteConcentration = partMP > 0.4 ? (partMP - 0.4) * 50 : 0
 
-    // Variation aléatoire contrôlée (±15% du score) pour explorer d'autres combinaisons
-    const variation = seed > 0 ? (pseudoRand(idx) - 0.5) * 0.3 * dist : 0
+    // Variation aléatoire contrôlée pour explorer d'autres combinaisons
+    const variation = seed > 0 ? (pseudoRand(idx) - 0.5) * 0.3 * Math.max(distPolymere, 1) : 0
 
     return -(dist + penaliteConcentration + variation)
   }
@@ -101,16 +115,25 @@ function optimiser(sacsDispo, mpsMap, recette, masseCible, mpsForcees = [], seed
   if (selection.length > 0) {
     // Composition actuelle
     function compCourante(sel) {
-      let tot = 0, pp = 0, pe = 0, alu = 0
+      let tot = 0, pp = 0, pe = 0, alu = 0, blanc = 0, noir = 0, sable = 0
       for (const { mp, taken: t } of sel) {
         if (!mp) continue
-        tot += t
-        pp  += t * (mp.pct_pp  ?? 0) / 100
-        pe  += t * (mp.pct_pe  ?? 0) / 100
-        alu += t * (mp.pct_alu ?? 0) / 100
+        tot   += t
+        pp    += t * (mp.pct_pp    ?? 0) / 100
+        pe    += t * (mp.pct_pe    ?? 0) / 100
+        alu   += t * (mp.pct_alu   ?? 0) / 100
+        blanc += t * (mp.pct_blanc ?? 0) / 100
+        noir  += t * (mp.pct_noir  ?? 0) / 100
+        sable += t * (mp.pct_sable ?? 0) / 100
       }
-      const plast = tot > 0 ? tot - sel.reduce((s, { mp, taken: t }) => s + t * (mp?.pct_sable ?? 0) / 100, 0) : 1
-      return { pp: plast > 0 ? pp/plast*100 : 0, pe: plast > 0 ? pe/plast*100 : 0, alu: plast > 0 ? alu/plast*100 : 0 }
+      const plast = tot > sable ? tot - sable : 1
+      return {
+        pp:    plast > 0 ? pp/plast*100    : 0,
+        pe:    plast > 0 ? pe/plast*100    : 0,
+        alu:   plast > 0 ? alu/plast*100   : 0,
+        blanc: plast > 0 ? blanc/plast*100 : 0,
+        noir:  plast > 0 ? noir/plast*100  : 0,
+      }
     }
 
     const comp = compCourante(selection)
@@ -120,13 +143,21 @@ function optimiser(sacsDispo, mpsMap, recette, masseCible, mpsForcees = [], seed
     // Si l'écart est significatif (>3%), tenter d'ajouter un sac correcteur partiel
     if ((Math.abs(ecartPP) > 3 || Math.abs(ecartPE) > 3) && sacsDisponibles.length > 0) {
       // Chercher dans les sacs restants celui qui réduit le plus l'écart
+      const compCour = compCourante(selection)
+      const ecartBlanc = compCour.blanc - (recette.pct_blanc_cible ?? 0)
+      const ecartNoir  = compCour.noir  - (recette.pct_noir_cible  ?? 0)
+
       const correcteur = sacsDisponibles
         .map(sac => {
           const mp = mpsMap[sac.mp_id]
           if (!mp) return null
-          // Score correctif : dans le sens opposé à l'écart
-          const scoreCorr = (ecartPP > 0 ? -(mp.pct_pp ?? 0) : (mp.pct_pp ?? 0))
-                          + (ecartPE > 0 ? -(mp.pct_pe ?? 0) : (mp.pct_pe ?? 0))
+          // Exclure les MP qui introduisent du noir si la recette n'en veut pas
+          if ((recette.pct_noir_cible ?? 0) < 5 && (mp.pct_noir ?? 0) > 10) return null
+          // Score correctif sur polymères ET couleurs
+          const scoreCorr = (ecartPP    > 0 ? -(mp.pct_pp        ?? 0) : (mp.pct_pp        ?? 0))
+                          + (ecartPE    > 0 ? -(mp.pct_pe        ?? 0) : (mp.pct_pe        ?? 0))
+                          + (ecartBlanc > 0 ? -(mp.pct_blanc     ?? 0) : (mp.pct_blanc     ?? 0)) * 1.5
+                          + (ecartNoir  > 0 ? -(mp.pct_noir      ?? 0) : (mp.pct_noir      ?? 0)) * 2.0
           return { sac, mp, score: scoreCorr }
         })
         .filter(Boolean)
@@ -223,8 +254,18 @@ export default function Optimiseur() {
     setSaved(false)
     const recette = recettes.find(r => r.id === rcId)
     const seed = Math.floor(Math.random() * 100000)
-    // Appliquer les restrictions : filtrer/limiter les sacs disponibles
-    let sacsFiltrés = [...sacs]
+    // Filtrer les sacs dont la MP n'est pas autorisée pour cette recette
+    let sacsFiltrés = sacs.filter(sac => {
+      const mp = mpsMap[sac.mp_id]
+      if (!mp) return false
+      const autorisees = mp.recettes_autorisees ?? []
+      // Si la MP a des recettes définies, vérifier que la recette choisie en fait partie
+      if (autorisees.length > 0) return autorisees.includes(rcId)
+      // Si aucune recette définie (MP ancienne sans config), on l'inclut quand même
+      return true
+    })
+
+    // Appliquer les restrictions manuelles : filtrer/limiter les sacs disponibles
     for (const r of restrictions) {
       if (r.type === 'exclure') {
         sacsFiltrés = sacsFiltrés.filter(s => s.mp_id !== r.mpId)
