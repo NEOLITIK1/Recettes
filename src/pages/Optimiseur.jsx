@@ -164,6 +164,7 @@ export default function Optimiseur() {
   const [masseCible, setMasseCible] = useState(5000)
   const [nomBatch, setNomBatch] = useState('')
   const [mpsForcees, setMpsForcees] = useState([]) // [{ mpId, masse }]
+  const [restrictions, setRestrictions] = useState([]) // [{ mpId, type: 'exclure'|'limiter', maxSacs: number }]
 
   // Résultat + historique des propositions
   const [propositions, setPropositions] = useState([]) // tableau de sélections
@@ -195,6 +196,17 @@ export default function Optimiseur() {
     setLoading(false)
   }
 
+  function ajouterRestriction() {
+    if (mpsListe.length === 0) return
+    setRestrictions(prev => [...prev, { mpId: mpsListe[0]?.id ?? '', type: 'exclure', maxSacs: 1 }])
+  }
+  function majRestriction(i, field, value) {
+    setRestrictions(prev => prev.map((r, idx) => idx === i ? { ...r, [field]: value } : r))
+  }
+  function supprimerRestriction(i) {
+    setRestrictions(prev => prev.filter((_, idx) => idx !== i))
+  }
+
   function ajouterMpForcee() {
     setMpsForcees(prev => [...prev, { mpId: mpsListe[0]?.id ?? '', masse: 500 }])
   }
@@ -211,7 +223,22 @@ export default function Optimiseur() {
     setSaved(false)
     const recette = recettes.find(r => r.id === rcId)
     const seed = Math.floor(Math.random() * 100000)
-    const sel = optimiser(sacs, mpsMap, recette, masseCible, mpsForcees, seed)
+    // Appliquer les restrictions : filtrer/limiter les sacs disponibles
+    let sacsFiltrés = [...sacs]
+    for (const r of restrictions) {
+      if (r.type === 'exclure') {
+        sacsFiltrés = sacsFiltrés.filter(s => s.mp_id !== r.mpId)
+      } else if (r.type === 'limiter') {
+        const maxSacs = parseInt(r.maxSacs) || 1
+        let compteur = 0
+        sacsFiltrés = sacsFiltrés.filter(s => {
+          if (s.mp_id !== r.mpId) return true
+          compteur++
+          return compteur <= maxSacs
+        })
+      }
+    }
+    const sel = optimiser(sacsFiltrés, mpsMap, recette, masseCible, mpsForcees, seed)
     // Tronquer l'historique après l'index courant et ajouter la nouvelle proposition
     const nouvellesProps = [...propositions.slice(0, propIndex + 1), sel]
     setPropositions(nouvellesProps)
@@ -289,6 +316,7 @@ export default function Optimiseur() {
     setPropIndex(-1)
     setNomBatch('')
     setMpsForcees([])
+    setRestrictions([])
     fetchAll()
   }
 
@@ -384,6 +412,50 @@ export default function Optimiseur() {
               />
               <span className="text-xs text-gray-400">kg</span>
               <button onClick={() => supprimerMpForcee(i)} className="text-red-400 hover:text-red-600 text-lg leading-none px-1">×</button>
+            </div>
+          ))}
+        </div>
+
+        {/* Restrictions */}
+        <div className="mb-4">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-xs font-medium text-gray-700">Restrictions <span className="text-gray-400 font-normal">(exclure ou limiter une MP)</span></p>
+            <button onClick={ajouterRestriction} className="text-xs px-2 py-1 border border-gray-200 rounded hover:bg-gray-50">
+              + Ajouter
+            </button>
+          </div>
+          {restrictions.length === 0 && (
+            <p className="text-xs text-gray-400 italic">Aucune — l'optimiseur utilise toutes les MP du stock</p>
+          )}
+          {restrictions.map((r, i) => (
+            <div key={i} className="flex gap-2 items-center mb-2 flex-wrap">
+              <select
+                value={r.mpId}
+                onChange={e => majRestriction(i, 'mpId', e.target.value)}
+                className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-gray-400"
+              >
+                {mpsListe.map(m => <option key={m.id} value={m.id}>{m.id} — {m.nom}</option>)}
+              </select>
+              <select
+                value={r.type}
+                onChange={e => majRestriction(i, 'type', e.target.value)}
+                className="text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-gray-400"
+              >
+                <option value="exclure">Exclure totalement</option>
+                <option value="limiter">Limiter à</option>
+              </select>
+              {r.type === 'limiter' && (
+                <>
+                  <input
+                    type="number" min="1"
+                    value={r.maxSacs}
+                    onChange={e => majRestriction(i, 'maxSacs', e.target.value)}
+                    className="w-16 text-sm border border-gray-200 rounded-lg px-2 py-2 focus:outline-none focus:border-gray-400"
+                  />
+                  <span className="text-xs text-gray-400">sac(s) max</span>
+                </>
+              )}
+              <button onClick={() => supprimerRestriction(i)} className="text-red-400 hover:text-red-600 text-lg leading-none px-1">×</button>
             </div>
           ))}
         </div>
