@@ -78,7 +78,7 @@ function optimiser(sacsDispo, mpsMap, recette, masseCible, mpsForcees = [], seed
   const sacsDisponibles = [...sacsDispo]
 
   let iterations = 0
-  while (totalMasse < masseCible * 0.9 && sacsDisponibles.length > 0 && iterations < 50) {
+  while (totalMasse < masseCible * 0.95 && sacsDisponibles.length > 0 && iterations < 50) {
     iterations++
 
     // Re-scorer avec la sélection actuelle (tient compte de la diversification)
@@ -95,10 +95,12 @@ function optimiser(sacsDispo, mpsMap, recette, masseCible, mpsForcees = [], seed
     let partial = false
 
     // Utilisation partielle si le sac dépasse ce qu'il reste
-    if (taken > remaining * 1.1) {
-      taken = Math.round(remaining)
+    // Couper le sac dès qu'il ferait dépasser la masse cible de plus de 5%
+    if (totalMasse + taken > masseCible * 1.05) {
+      taken = Math.max(0, Math.round(masseCible * 1.05 - totalMasse))
       partial = true
     }
+    if (taken <= 0) continue
 
     selection.push({
       sac: meilleur,
@@ -188,6 +190,10 @@ function optimiser(sacsDispo, mpsMap, recette, masseCible, mpsForcees = [], seed
       for (const fraction of [0.25, 0.5, 0.75, 1.0]) {
         const masseTest = Math.round(masseSacDispo * fraction)
         if (masseTest <= 0) continue
+
+        // Vérifier que l'ajout ne dépasse pas ±5% de la masse cible
+        const masseActuelle = selection.reduce((s, x) => s + x.taken, 0)
+        if (masseActuelle + masseTest > masseCible * 1.05) continue
 
         // Simuler l'ajout de cette fraction
         const selTest = [...selection, {
