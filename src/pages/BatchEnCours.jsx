@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase.js'
 import { calcComposition, calcCout, fmt1 } from '../lib/calculs.js'
 import EcartBadge from '../components/EcartBadge.jsx'
@@ -21,6 +22,7 @@ export default function BatchEnCours() {
   const [resteKg, setResteKg] = useState('')
 
   // Impression
+  const navigate = useNavigate()
   const printRef = useRef()
 
   useEffect(() => { fetchAll() }, [])
@@ -45,6 +47,41 @@ export default function BatchEnCours() {
     }
     setBatches((batchData ?? []).map(b => ({ ...b, lignes: lignesParBatch[b.id] ?? [] })))
     setLoading(false)
+  }
+
+  // Repasser un batch en optimiseur — remet les sacs en stock et redirige
+  async function repasserEnOptimiseur(batch) {
+    if (!confirm(`Repasser le batch "${batch.nom}" en optimiseur ? Les sacs seront remis en stock.`)) return
+
+    // Remettre les sacs en stock disponible
+    // On crée de nouveaux sacs avec les MP et masses du batch
+    for (const ligne of batch.lignes) {
+      if (!ligne.mp_id || !ligne.masse_totale_kg) continue
+      // Remettre chaque sac individuellement si on a le détail, sinon en un seul sac
+      const sacsKg = ligne.sacs_kg?.filter(s => s > 0) ?? [ligne.masse_totale_kg]
+      for (const masseKg of sacsKg) {
+        await supabase.from('sacs').insert({
+          mp_id: ligne.mp_id,
+          masse_kg: masseKg,
+          reference: `Remis-${batch.id}`,
+          statut: 'disponible',
+        })
+      }
+    }
+
+    // Supprimer le batch
+    await supabase.from('batch_lignes').delete().eq('batch_id', batch.id)
+    await supabase.from('batches').delete().eq('id', batch.id)
+
+    // Stocker les paramètres pour pré-remplir l'optimiseur
+    const masseTotale = batch.lignes.reduce((s, l) => s + (l.masse_totale_kg ?? 0), 0)
+    localStorage.setItem('optimiseur_prefill', JSON.stringify({
+      recetteId: batch.recette_id,
+      masse: Math.round(masseTotale),
+      nom: batch.nom,
+    }))
+
+    navigate('/optimiseur')
   }
 
   // Supprimer un batch — remet les sacs en stock
@@ -270,6 +307,9 @@ ${compHtml ? `<h2 style="font-size:14px;margin-bottom:8px;">Composition résulta
                   <div className="flex gap-2 flex-wrap justify-end">
                     <button onClick={() => imprimerBatch(batch)} className="text-xs px-3 py-1.5 border border-gray-200 rounded-lg hover:bg-gray-50">
                       🖨 Imprimer
+                    </button>
+                    <button onClick={() => repasserEnOptimiseur(batch)} className="text-xs px-3 py-1.5 border border-amber-200 text-amber-700 rounded-lg hover:bg-amber-50">
+                      ↩ Optimiseur
                     </button>
                     <button onClick={() => { setModalAjout(batch.id); setAjoutMpId(mpsListe[0]?.id ?? '') }} className="text-xs px-3 py-1.5 border border-gray-200 rounded-lg hover:bg-gray-50">
                       + Ajouter MP
