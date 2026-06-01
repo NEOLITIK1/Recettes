@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase.js'
 import { MATIERES } from '../data/seed.js'
 import Modal from '../components/Modal.jsx'
 import CompositionBar from '../components/CompositionBar.jsx'
+import TooltipMp from '../components/TooltipMp.jsx'
 
 const TYPE_STYLES = {
   'Interne':  'bg-emerald-50 text-emerald-700',
@@ -12,7 +13,7 @@ const TYPE_STYLES = {
 
 const EMPTY_FORM = {
   id: '', nom: '', type_appro: 'Régulier', description: '', cout_par_tonne: 0,
-  pct_pp: 0, pct_pe: 0, pct_alu: 0, pct_autres: 0,
+  pct_pp: 0, pct_pe: 0, pct_alu: 0, pct_autres: 0, pct_autres_plastiques: 0,
   pct_blanc: 0, pct_transparent: 0, pct_noir: 0, pct_autres_couleurs: 0, pct_sable: 0,
 }
 
@@ -138,7 +139,9 @@ export default function MatieresPremières() {
                 {mps.map((mp) => (
                   <tr key={mp.id} className="hover:bg-gray-50 transition-colors">
                     <td className="px-4 py-3 font-mono text-xs text-gray-400">{mp.id}</td>
-                    <td className="px-4 py-3 font-medium text-gray-900">{mp.nom}</td>
+                    <td className="px-4 py-3 font-medium text-gray-900">
+                      <TooltipMp mp={mp}><span className="cursor-default">{mp.nom}</span></TooltipMp>
+                    </td>
                     <td className="px-4 py-3">
                       {mp.type_appro ? (
                         <span className={`px-2 py-0.5 rounded text-xs font-medium ${TYPE_STYLES[mp.type_appro] ?? 'bg-gray-100 text-gray-600'}`}>
@@ -216,6 +219,9 @@ export default function MatieresPremières() {
             <Field label="% PP"  type="number" {...fNum('pct_pp')} />
             <Field label="% PE"  type="number" {...fNum('pct_pe')} />
             <Field label="% Alu" type="number" {...fNum('pct_alu')} />
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <Field label="% Autres plastiques" type="number" {...fNum('pct_autres_plastiques')} />
           </div>
           <div className="grid grid-cols-3 gap-3">
             <Field label="% Blanc"       type="number" {...fNum('pct_blanc')} />
