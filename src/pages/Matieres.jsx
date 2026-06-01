@@ -15,6 +15,7 @@ const EMPTY_FORM = {
   id: '', nom: '', type_appro: 'Régulier', description: '', cout_par_tonne: 0,
   pct_pp: 0, pct_pe: 0, pct_alu: 0, pct_autres: 0, pct_autres_plastiques: 0,
   pct_blanc: 0, pct_transparent: 0, pct_noir: 0, pct_autres_couleurs: 0, pct_sable: 0,
+  recettes_autorisees: [],
 }
 
 export default function MatieresPremières() {
@@ -24,16 +25,18 @@ export default function MatieresPremières() {
   const [form, setForm] = useState(EMPTY_FORM)
   const [editId, setEditId] = useState(null)
   const [seeded, setSeeded] = useState(false)
+  const [recettes, setRecettes] = useState([])
 
   useEffect(() => { fetchMps() }, [])
 
   async function fetchMps() {
     setLoading(true)
-    const { data, error } = await supabase
-      .from('matieres_premieres')
-      .select('*')
-      .order('id')
+    const [{ data, error }, { data: rcData }] = await Promise.all([
+      supabase.from('matieres_premieres').select('*').order('id'),
+      supabase.from('recettes_cibles').select('id, nom').order('id'),
+    ])
     if (!error) setMps(data ?? [])
+    setRecettes(rcData ?? [])
     setLoading(false)
   }
 
@@ -51,13 +54,17 @@ export default function MatieresPremières() {
   }
 
   function openEdit(mp) {
-    setForm({ ...mp })
+    setForm({ ...mp, recettes_autorisees: mp.recettes_autorisees ?? [] })
     setEditId(mp.id)
     setModalOpen(true)
   }
 
   async function handleSave() {
     if (!form.id || !form.nom) return
+    if (!form.recettes_autorisees || form.recettes_autorisees.length === 0) {
+      alert('Veuillez sélectionner au moins une recette autorisée.')
+      return
+    }
     const payload = { ...form }
     const { error } = editId
       ? await supabase.from('matieres_premieres').update(payload).eq('id', editId)
@@ -139,8 +146,17 @@ export default function MatieresPremières() {
                 {mps.map((mp) => (
                   <tr key={mp.id} className="hover:bg-gray-50 transition-colors">
                     <td className="px-4 py-3 font-mono text-xs text-gray-400">{mp.id}</td>
-                    <td className="px-4 py-3 font-medium text-gray-900">
-                      <TooltipMp mp={mp}><span className="cursor-default">{mp.nom}</span></TooltipMp>
+                    <td className="px-4 py-3">
+                      <TooltipMp mp={mp}>
+                        <span className="cursor-default font-medium text-gray-900">{mp.nom}</span>
+                      </TooltipMp>
+                      {(mp.recettes_autorisees ?? []).length > 0 && (
+                        <div className="flex gap-1 mt-0.5 flex-wrap">
+                          {(mp.recettes_autorisees ?? []).map(rid => (
+                            <span key={rid} className="text-xs bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">{rid}</span>
+                          ))}
+                        </div>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       {mp.type_appro ? (
@@ -231,6 +247,42 @@ export default function MatieresPremières() {
           <div className="grid grid-cols-2 gap-3">
             <Field label="% Autres couleurs" type="number" {...fNum('pct_autres_couleurs')} />
             <Field label="% Sable/Charge"    type="number" {...fNum('pct_sable')} />
+          </div>
+
+          <div className="pt-2 border-t">
+            <p className="text-xs font-medium text-gray-700 mb-2">
+              Recettes autorisées <span className="text-red-500">*</span>
+              <span className="text-gray-400 font-normal ml-1">(obligatoire)</span>
+            </p>
+            {recettes.length === 0 ? (
+              <p className="text-xs text-gray-400 italic">Aucune recette — créez-en d'abord dans l'onglet Recettes.</p>
+            ) : (
+              <div className="space-y-1.5">
+                {recettes.map(rc => {
+                  const checked = (form.recettes_autorisees ?? []).includes(rc.id)
+                  return (
+                    <label key={rc.id} className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => {
+                          const current = form.recettes_autorisees ?? []
+                          setForm(prev => ({
+                            ...prev,
+                            recettes_autorisees: checked
+                              ? current.filter(id => id !== rc.id)
+                              : [...current, rc.id]
+                          }))
+                        }}
+                        className="rounded border-gray-300 text-gray-900"
+                      />
+                      <span className="text-sm text-gray-700">{rc.nom}</span>
+                      <span className="text-xs text-gray-400">{rc.id}</span>
+                    </label>
+                  )
+                })}
+              </div>
+            )}
           </div>
         </div>
       </Modal>
