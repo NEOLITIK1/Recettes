@@ -5,7 +5,7 @@ import EcartBadge from '../components/EcartBadge.jsx'
 
 // Algorithme greedy avec diversification et MP forcées
 // mpsForcees : [{ mpId, masse }] — MP à inclure obligatoirement
-function optimiser(sacsDispo, mpsMap, recette, masseCible, mpsForcees = [], seed = 0) {
+function optimiser(sacsDispo, mpsMap, recette, masseCible, mpsForcees = [], seed = 0, recetteId = '') {
   if (!recette) return []
 
   // 1. Construire les lignes forcées d'abord
@@ -156,7 +156,7 @@ function optimiser(sacsDispo, mpsMap, recette, masseCible, mpsForcees = [], seed
     if (!mp) return false
     if ((recette.pct_noir_cible ?? 0) < 5 && (mp.pct_noir ?? 0) > 10) return false
     const autorisees = mp.recettes_autorisees ?? []
-    if (autorisees.length > 0 && !autorisees.includes(rcId)) return false
+    if (autorisees.length > 0 && !autorisees.includes(recetteId)) return false
     return true
   })
 
@@ -319,7 +319,7 @@ export default function Optimiseur() {
         })
       }
     }
-    const sel = optimiser(sacsFiltrés, mpsMap, recette, masseCible, mpsForcees, seed)
+    const sel = optimiser(sacsFiltrés, mpsMap, recette, masseCible, mpsForcees, seed, rcId)
     // Tronquer l'historique après l'index courant et ajouter la nouvelle proposition
     const nouvellesProps = [...propositions.slice(0, propIndex + 1), sel]
     setPropositions(nouvellesProps)
