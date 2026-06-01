@@ -247,12 +247,37 @@ export default function Optimiseur() {
   const [propositions, setPropositions] = useState([]) // tableau de sélections
   const [propIndex, setPropIndex] = useState(-1)       // index courant
   const [saving, setSaving] = useState(false)
+  const [prefillPending, setPrefillPending] = useState(false)
   const [saved, setSaved] = useState(false)
 
   // Sélection courante dérivée de l'historique
   const selection = propIndex >= 0 ? propositions[propIndex] : null
 
-  useEffect(() => { fetchAll() }, [])
+  useEffect(() => {
+    fetchAll()
+    // Lire le prefill si on arrive depuis "Repasser en optimiseur"
+    const prefill = localStorage.getItem('optimiseur_prefill')
+    if (prefill) {
+      try {
+        const { recetteId, masse, nom } = JSON.parse(prefill)
+        if (recetteId) setRcId(recetteId)
+        if (masse) setMasseCible(masse)
+        if (nom) setNomBatch(nom)
+        localStorage.removeItem('optimiseur_prefill')
+        // Lancer automatiquement après chargement
+        setPrefillPending(true)
+      } catch(e) {}
+    }
+  }, [])
+
+  // Déclencher le calcul auto après chargement si prefill en attente
+  useEffect(() => {
+    if (prefillPending && recettes.length > 0 && sacs.length > 0) {
+      setPrefillPending(false)
+      // Petit délai pour que rcId soit bien mis à jour
+      setTimeout(() => lancer(), 100)
+    }
+  }, [prefillPending, recettes, sacs])
 
   async function fetchAll() {
     setLoading(true)
