@@ -110,73 +110,113 @@ function optimiser(sacsDispo, mpsMap, recette, masseCible, mpsForcees = [], seed
     totalMasse += taken
   }
 
-  // ── Ajustement fin de composition ──
-  // Calculer l'écart actuel vs cible et ajuster le dernier sac non-forcé
-  if (selection.length > 0) {
-    // Composition actuelle
-    function compCourante(sel) {
-      let tot = 0, pp = 0, pe = 0, alu = 0, blanc = 0, noir = 0, sable = 0
-      for (const { mp, taken: t } of sel) {
-        if (!mp) continue
-        tot   += t
-        pp    += t * (mp.pct_pp    ?? 0) / 100
-        pe    += t * (mp.pct_pe    ?? 0) / 100
-        alu   += t * (mp.pct_alu   ?? 0) / 100
-        blanc += t * (mp.pct_blanc ?? 0) / 100
-        noir  += t * (mp.pct_noir  ?? 0) / 100
-        sable += t * (mp.pct_sable ?? 0) / 100
-      }
-      const plast = tot > sable ? tot - sable : 1
-      return {
-        pp:    plast > 0 ? pp/plast*100    : 0,
-        pe:    plast > 0 ? pe/plast*100    : 0,
-        alu:   plast > 0 ? alu/plast*100   : 0,
-        blanc: plast > 0 ? blanc/plast*100 : 0,
-        noir:  plast > 0 ? noir/plast*100  : 0,
+  // ── Phase d'optimisation fine ──
+  // Calcule la composition courante d'une sélection
+  function compCourante(sel) {
+    let tot = 0, pp = 0, pe = 0, alu = 0, blanc = 0, noir = 0, sable = 0
+    for (const { mp, taken: t } of sel) {
+      if (!mp) continue
+      tot   += t
+      pp    += t * (mp.pct_pp    ?? 0) / 100
+      pe    += t * (mp.pct_pe    ?? 0) / 100
+      alu   += t * (mp.pct_alu   ?? 0) / 100
+      blanc += t * (mp.pct_blanc ?? 0) / 100
+      noir  += t * (mp.pct_noir  ?? 0) / 100
+      sable += t * (mp.pct_sable ?? 0) / 100
+    }
+    const plast = tot > sable ? tot - sable : 1
+    return {
+      total: tot,
+      pp:    plast > 0 ? pp/plast*100    : 0,
+      pe:    plast > 0 ? pe/plast*100    : 0,
+      alu:   plast > 0 ? alu/plast*100   : 0,
+      blanc: plast > 0 ? blanc/plast*100 : 0,
+      noir:  plast > 0 ? noir/plast*100  : 0,
+    }
+  }
+
+  // Score d'écart global (plus c'est bas, mieux c'est)
+  function scoreEcart(comp) {
+    return Math.sqrt(
+      Math.pow(comp.pp    - recette.pct_pp_cible,              2) +
+      Math.pow(comp.pe    - recette.pct_pe_cible,              2) +
+      Math.pow(comp.alu   - recette.pct_alu_cible,             2) +
+      Math.pow((comp.blanc - (recette.pct_blanc_cible ?? 0)) * 1.5, 2) +
+      Math.pow((comp.noir  - (recette.pct_noir_cible  ?? 0)) * 2.0, 2)
+    )
+  }
+
+  // Itérations d'optimisation fine : jusqu'à 5 passes
+  const SEUIL_ECART = 3.0   // % — on affine tant que l'écart dépasse ce seuil
+  const MAX_PASSES  = 5
+
+  // Construire le pool de sacs utilisables pour l'ajustement (tous sacs autorisés)
+  const sacsDuPool = [...sacsDispo, ...sacsDisponibles].filter(s => {
+    const mp = mpsMap[s.mp_id]
+    if (!mp) return false
+    if ((recette.pct_noir_cible ?? 0) < 5 && (mp.pct_noir ?? 0) > 10) return false
+    const autorisees = mp.recettes_autorisees ?? []
+    if (autorisees.length > 0 && !autorisees.includes(rcId)) return false
+    return true
+  })
+
+  for (let pass = 0; pass < MAX_PASSES; pass++) {
+    const comp = compCourante(selection)
+    const ecartActuel = scoreEcart(comp)
+    if (ecartActuel <= SEUIL_ECART) break  // Assez précis, on s'arrête
+
+    // Calculer les écarts par paramètre
+    const ecartPP    = comp.pp    - recette.pct_pp_cible
+    const ecartPE    = comp.pe    - recette.pct_pe_cible
+    const ecartBlanc = comp.blanc - (recette.pct_blanc_cible ?? 0)
+    const ecartNoir  = comp.noir  - (recette.pct_noir_cible  ?? 0)
+
+    // Trouver le meilleur sac correcteur dans le pool
+    let meilleurCorrecteur = null
+    let meilleurScore = ecartActuel  // On ne retient que si ça améliore
+
+    for (const sac of sacsDuPool) {
+      // Ne pas re-sélectionner un sac déjà totalement utilisé
+      const dejaUsed = selection.find(s => s.sac.id === sac.id && !s.partial)
+      if (dejaUsed) continue
+
+      const mp = mpsMap[sac.mp_id]
+      if (!mp) continue
+
+      // Tester différentes fractions de ce sac (25%, 50%, 75%, 100%)
+      const masseSacDispo = sac.masse_kg ?? 0
+      for (const fraction of [0.25, 0.5, 0.75, 1.0]) {
+        const masseTest = Math.round(masseSacDispo * fraction)
+        if (masseTest <= 0) continue
+
+        // Simuler l'ajout de cette fraction
+        const selTest = [...selection, {
+          sac, mp, taken: masseTest,
+          partial: fraction < 1.0,
+          forced: false,
+        }]
+        const compTest = compCourante(selTest)
+        const ecartTest = scoreEcart(compTest)
+
+        if (ecartTest < meilleurScore) {
+          meilleurScore = ecartTest
+          meilleurCorrecteur = { sac, mp, taken: masseTest, partial: fraction < 1.0 }
+        }
       }
     }
 
-    const comp = compCourante(selection)
-    const ecartPP = comp.pp - recette.pct_pp_cible
-    const ecartPE = comp.pe - recette.pct_pe_cible
+    if (!meilleurCorrecteur) break  // Aucun sac ne peut améliorer
 
-    // Si l'écart est significatif (>3%), tenter d'ajouter un sac correcteur partiel
-    if ((Math.abs(ecartPP) > 3 || Math.abs(ecartPE) > 3) && sacsDisponibles.length > 0) {
-      // Chercher dans les sacs restants celui qui réduit le plus l'écart
-      const compCour = compCourante(selection)
-      const ecartBlanc = compCour.blanc - (recette.pct_blanc_cible ?? 0)
-      const ecartNoir  = compCour.noir  - (recette.pct_noir_cible  ?? 0)
-
-      const correcteur = sacsDisponibles
-        .map(sac => {
-          const mp = mpsMap[sac.mp_id]
-          if (!mp) return null
-          // Exclure les MP qui introduisent du noir si la recette n'en veut pas
-          if ((recette.pct_noir_cible ?? 0) < 5 && (mp.pct_noir ?? 0) > 10) return null
-          // Score correctif sur polymères ET couleurs
-          const scoreCorr = (ecartPP    > 0 ? -(mp.pct_pp        ?? 0) : (mp.pct_pp        ?? 0))
-                          + (ecartPE    > 0 ? -(mp.pct_pe        ?? 0) : (mp.pct_pe        ?? 0))
-                          + (ecartBlanc > 0 ? -(mp.pct_blanc     ?? 0) : (mp.pct_blanc     ?? 0)) * 1.5
-                          + (ecartNoir  > 0 ? -(mp.pct_noir      ?? 0) : (mp.pct_noir      ?? 0)) * 2.0
-          return { sac, mp, score: scoreCorr }
-        })
-        .filter(Boolean)
-        .sort((a, b) => b.score - a.score)[0]
-
-      if (correcteur) {
-        // Ajouter une fraction de ce sac correcteur (max 20% de la masse totale)
-        const masseMax = Math.min(masseCible * 0.2, correcteur.sac.masse_kg ?? 0)
-        const masseCorr = Math.round(masseMax)
-        if (masseCorr > 0) {
-          selection.push({
-            sac: correcteur.sac,
-            mp: correcteur.mp,
-            taken: masseCorr,
-            partial: masseCorr < (correcteur.sac.masse_kg ?? 0),
-            forced: false,
-          })
-        }
+    // Ajouter le correcteur (ou mettre à jour si le sac était déjà en partiel)
+    const existant = selection.findIndex(s => s.sac.id === meilleurCorrecteur.sac.id)
+    if (existant >= 0) {
+      selection[existant] = {
+        ...selection[existant],
+        taken: meilleurCorrecteur.taken,
+        partial: meilleurCorrecteur.partial,
       }
+    } else {
+      selection.push({ ...meilleurCorrecteur, forced: false })
     }
   }
 
