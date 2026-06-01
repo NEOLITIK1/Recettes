@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase.js'
 import Modal from '../components/Modal.jsx'
+import TooltipMp from '../components/TooltipMp.jsx'
 
 const STATUT_STYLES = {
   disponible: 'bg-emerald-50 text-emerald-700',
@@ -23,7 +24,7 @@ export default function Stock() {
     setLoading(true)
     const [{ data: sacsData }, { data: mpsData }] = await Promise.all([
       supabase.from('sacs').select('*').order('created_at', { ascending: false }),
-      supabase.from('matieres_premieres').select('id, nom').order('id'),
+      supabase.from('matieres_premieres').select('*').order('id'),
     ])
     setSacs(sacsData ?? [])
     setMps(mpsData ?? [])
