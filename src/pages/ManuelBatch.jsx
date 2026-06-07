@@ -21,7 +21,7 @@ export default function ManuelBatch() {
   async function fetchAll() {
     setLoading(true)
     const [{ data: rc }, { data: mpsData }] = await Promise.all([
-      supabase.from('recettes_cibles').select('*').order('id'),
+      supabase.from('recettes_cibles').select('*').eq('archivee', false).order('id'),
       supabase.from('matieres_premieres').select('*').order('id'),
     ])
     setRecettes(rc ?? [])
@@ -75,13 +75,14 @@ export default function ManuelBatch() {
   const recette = recettes.find(r => r.id === rcId)
 
   const COMP_PARAMS = [
-    { key: 'pp',       label: '%PP',       cibleKey: 'pct_pp_cible' },
-    { key: 'pe',       label: '%PE',       cibleKey: 'pct_pe_cible' },
-    { key: 'alu',      label: '%Alu',      cibleKey: 'pct_alu_cible' },
-    { key: 'blanc',    label: '%Blanc',    cibleKey: 'pct_blanc_cible' },
-    { key: 'transp',   label: '%Transp.',  cibleKey: 'pct_transparent_cible' },
-    { key: 'noir',     label: '%Noir',     cibleKey: 'pct_noir_cible' },
-    { key: 'ecoLithe', label: '%EcoLithe', cibleKey: 'pct_ecolithe_cible' },
+    { key: 'pp',        label: '%PP',          cibleKey: 'pct_pp_cible' },
+    { key: 'pe',        label: '%PE',          cibleKey: 'pct_pe_cible' },
+    { key: 'alu',       label: '%Alu',         cibleKey: 'pct_alu_cible' },
+    { key: 'blanc',     label: '%Blanc',       cibleKey: 'pct_blanc_cible' },
+    { key: 'transp',    label: '%Transp.',     cibleKey: 'pct_transparent_cible' },
+    { key: 'noir',      label: '%Noir',        cibleKey: 'pct_noir_cible' },
+    { key: 'ecoLithe',  label: '%EcoLithe',    cibleKey: 'pct_ecolithe_cible' },
+    { key: 'chargeMin', label: '%Charge min.', cibleKey: 'pct_charge_minerale_cible' },
   ]
 
   async function valider() {
@@ -118,6 +119,7 @@ export default function ManuelBatch() {
         masse_totale_kg: l.sacs.reduce((s, v) => s + v, 0),
         sacs_kg: l.sacs.filter(s => s > 0),
         ordre: i,
+        sacs_consommes: [], // mode manuel : pas de lien sac → restauration auto impossible
       }))
 
     await supabase.from('batch_lignes').insert(lignesPayload)

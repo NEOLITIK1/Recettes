@@ -1,8 +1,9 @@
 import { NavLink } from 'react-router-dom'
 
 const NAV = [
-  { to: '/matieres',   label: 'Matières premières',  icon: '🧪' },
-  { to: '/recettes',   label: 'Recettes cibles',      icon: '🎯' },
+  { to: '/dashboard',  label: 'Tableau de bord',       icon: '📊' },
+  { to: '/matieres',   label: 'Matières premières',    icon: '🧪' },
+  { to: '/recettes',   label: 'Recettes cibles',       icon: '🎯' },
   { to: '/stock',      label: 'Stock de sacs',         icon: '📦' },
   { to: '/optimiseur', label: 'Optimiseur',            icon: '⚙️' },
   { to: '/manuel',     label: 'Composition manuelle',  icon: '✏️' },

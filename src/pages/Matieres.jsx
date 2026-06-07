@@ -14,8 +14,9 @@ const TYPE_STYLES = {
 const EMPTY_FORM = {
   id: '', nom: '', type_appro: 'Régulier', description: '', cout_par_tonne: 0,
   pct_pp: 0, pct_pe: 0, pct_alu: 0, pct_autres: 0, pct_autres_plastiques: 0,
-  pct_blanc: 0, pct_transparent: 0, pct_noir: 0, pct_autres_couleurs: 0, pct_sable: 0,
-  recettes_autorisees: [],
+  pct_blanc: 0, pct_transparent: 0, pct_noir: 0, pct_autres_couleurs: 0,
+  pct_sable: 0, pct_charge_minerale: 0,
+  recettes_autorisees: [], stock_mini_kg: 0,
 }
 
 export default function MatieresPremières() {
@@ -246,7 +247,16 @@ export default function MatieresPremières() {
           </div>
           <div className="grid grid-cols-2 gap-3">
             <Field label="% Autres couleurs" type="number" {...fNum('pct_autres_couleurs')} />
-            <Field label="% Sable/Charge"    type="number" {...fNum('pct_sable')} />
+          </div>
+
+          <p className="text-xs font-medium text-gray-500 pt-2 border-t">Fraction non plastique (%)</p>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="% Sable (EcoLithe)" type="number" {...fNum('pct_sable')} />
+            <Field label="% Charge minérale"  type="number" {...fNum('pct_charge_minerale')} />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Stock minimum (kg)" type="number" {...fNum('stock_mini_kg')} placeholder="0 = pas d'alerte" />
           </div>
 
           <div className="pt-2 border-t">

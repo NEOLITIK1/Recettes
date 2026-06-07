@@ -7,14 +7,15 @@ export default function TooltipMp({ mp, children }) {
   if (!mp) return children
 
   const params = [
-    { label: 'PP',               val: mp.pct_pp,               color: 'bg-blue-400' },
-    { label: 'PE',               val: mp.pct_pe,               color: 'bg-emerald-400' },
-    { label: 'Alu',              val: mp.pct_alu,              color: 'bg-amber-400' },
-    { label: 'Autres plastiques',val: mp.pct_autres_plastiques, color: 'bg-purple-400' },
-    { label: 'Blanc',            val: mp.pct_blanc,            color: 'bg-gray-200 border border-gray-300' },
-    { label: 'Transparent',      val: mp.pct_transparent,      color: 'bg-sky-300' },
-    { label: 'Noir',             val: mp.pct_noir,             color: 'bg-gray-700' },
-    { label: 'Sable/Charge',     val: mp.pct_sable,            color: 'bg-stone-300' },
+    { label: 'PP',                val: mp.pct_pp,                 color: 'bg-blue-400' },
+    { label: 'PE',                val: mp.pct_pe,                 color: 'bg-emerald-400' },
+    { label: 'Alu',               val: mp.pct_alu,                color: 'bg-amber-400' },
+    { label: 'Autres plastiques', val: mp.pct_autres_plastiques,  color: 'bg-purple-400' },
+    { label: 'Blanc',             val: mp.pct_blanc,              color: 'bg-gray-200 border border-gray-300' },
+    { label: 'Transparent',       val: mp.pct_transparent,        color: 'bg-sky-300' },
+    { label: 'Noir',              val: mp.pct_noir,               color: 'bg-gray-700' },
+    { label: 'Sable (EcoLithe)',  val: mp.pct_sable,              color: 'bg-stone-300' },
+    { label: 'Charge minérale',   val: mp.pct_charge_minerale,    color: 'bg-stone-600' },
   ].filter(p => (p.val ?? 0) > 0)
 
   return (

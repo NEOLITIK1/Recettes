@@ -1,5 +1,6 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
 import Layout from './components/Layout.jsx'
+import Dashboard from './pages/Dashboard.jsx'
 import Matieres from './pages/Matieres.jsx'
 import Recettes from './pages/Recettes.jsx'
 import Stock from './pages/Stock.jsx'
@@ -12,7 +13,8 @@ export default function App() {
   return (
     <Layout>
       <Routes>
-        <Route path="/" element={<Navigate to="/matieres" replace />} />
+        <Route path="/" element={<Navigate to="/dashboard" replace />} />
+        <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/matieres" element={<Matieres />} />
         <Route path="/recettes" element={<Recettes />} />
         <Route path="/stock" element={<Stock />} />

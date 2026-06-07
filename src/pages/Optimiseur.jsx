@@ -1,18 +1,25 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase.js'
-import { calcComposition, calcCout, fmt1 } from '../lib/calculs.js'
+import { calcComposition, calcCout, fmt1, effectiveMp } from '../lib/calculs.js'
 import EcartBadge from '../components/EcartBadge.jsx'
 
-// Algorithme greedy avec diversification et MP forcées
-// mpsForcees : [{ mpId, masse }] — MP à inclure obligatoirement
+// ─────────────────────────────────────────────────────────────────────────────
+// Algorithme : sélection greedy diversifiée + phase d'optimisation fine
+// ─────────────────────────────────────────────────────────────────────────────
 function optimiser(sacsDispo, mpsMap, recette, masseCible, mpsForcees = [], seed = 0, recetteId = '') {
   if (!recette) return []
 
-  // 1. Construire les lignes forcées d'abord
+  // Générateur pseudo-aléatoire déterministe basé sur le seed
+  function pseudoRand(i) {
+    const x = Math.sin(seed * 9301 + i * 49297 + 233720) * 10000
+    return x - Math.floor(x)
+  }
+
+  // 1. MP forcées : lignes virtuelles à inclure obligatoirement
   const selectionForcee = mpsForcees
     .filter(f => f.mpId && f.masse > 0)
     .map(f => ({
-      sac: { id: 'forced-' + f.mpId, mp_id: f.mpId, masse_kg: f.masse, reference: 'Forcé' },
+      sac: { id: 'forced-' + f.mpId, mp_id: f.mpId, masse_kg: parseFloat(f.masse), reference: 'Forcé', statut: 'disponible' },
       mp: mpsMap[f.mpId],
       taken: parseFloat(f.masse),
       partial: false,
@@ -22,89 +29,97 @@ function optimiser(sacsDispo, mpsMap, recette, masseCible, mpsForcees = [], seed
 
   const masseDejaCouverte = selectionForcee.reduce((s, f) => s + f.taken, 0)
   const masseRestante = masseCible - masseDejaCouverte
-
   if (masseRestante <= 0) return selectionForcee
 
-  // 2. Score : distance euclidienne à la recette + pénalité de concentration
-  // Générateur pseudo-aléatoire déterministe basé sur le seed
-  function pseudoRand(i) {
-    const x = Math.sin(seed * 9301 + i * 49297 + 233720) * 10000
-    return x - Math.floor(x)
+  // Helper : composition effective d'un sac (override prime sur MP)
+  function mpDuSac(sac) {
+    return effectiveMp(mpsMap[sac.mp_id], sac.composition_override)
   }
 
+  // 2. Score d'un sac dans le contexte d'une sélection en cours
   function scoreSac(sac, selectionActuelle, idx) {
-    const mp = mpsMap[sac.mp_id]
-    if (!mp) return -9999
+    const mp = mpDuSac(sac)
+    if (!mp) return Infinity
 
-    // Distance compositionnelle sur TOUS les paramètres de la recette
-    // Poids doubles sur les couleurs car elles sont souvent discriminantes
+    // Distance compositionnelle plastiques
     const distPolymere = Math.sqrt(
-      Math.pow((mp.pct_pp  ?? 0) - recette.pct_pp_cible,  2) +
-      Math.pow((mp.pct_pe  ?? 0) - recette.pct_pe_cible,  2) +
-      Math.pow((mp.pct_alu ?? 0) - recette.pct_alu_cible, 2)
+      Math.pow((mp.pct_pp  ?? 0) - (recette.pct_pp_cible  ?? 0), 2) +
+      Math.pow((mp.pct_pe  ?? 0) - (recette.pct_pe_cible  ?? 0), 2) +
+      Math.pow((mp.pct_alu ?? 0) - (recette.pct_alu_cible ?? 0), 2)
     )
 
+    // Distance couleur (blanc/transp poids 1.5, noir poids 2)
     const distCouleur = Math.sqrt(
-      Math.pow(((mp.pct_blanc       ?? 0) - recette.pct_blanc_cible)       * 1.5, 2) +
-      Math.pow(((mp.pct_transparent ?? 0) - recette.pct_transparent_cible) * 1.5, 2) +
-      Math.pow(((mp.pct_noir        ?? 0) - recette.pct_noir_cible)        * 2.0, 2)
+      Math.pow(((mp.pct_blanc       ?? 0) - (recette.pct_blanc_cible       ?? 0)) * 1.5, 2) +
+      Math.pow(((mp.pct_transparent ?? 0) - (recette.pct_transparent_cible ?? 0)) * 1.5, 2) +
+      Math.pow(((mp.pct_noir        ?? 0) - (recette.pct_noir_cible        ?? 0)) * 2.0, 2)
     )
 
-    // Pénalité dure si la MP apporte du noir alors que la recette n'en veut pas
-    const penaliteNoir = (recette.pct_noir_cible ?? 0) < 5 && (mp.pct_noir ?? 0) > 10
-      ? 500
-      : 0
+    // Distance charge minérale + EcoLithe (sable)
+    const distCharge = Math.sqrt(
+      Math.pow((mp.pct_sable           ?? 0) - (recette.pct_ecolithe_cible        ?? 0), 2) +
+      Math.pow((mp.pct_charge_minerale ?? 0) - (recette.pct_charge_minerale_cible ?? 0), 2)
+    )
 
-    const dist = distPolymere + distCouleur + penaliteNoir
+    // Pénalité dure : MP noire dans recette claire → INTERDIT (tout le lot serait gâché)
+    const penaliteNoirDansClair = (recette.pct_noir_cible ?? 0) < 5 && (mp.pct_noir ?? 0) > 10
+      ? 500 : 0
+    // Note: MP blanche dans recette noire = juste sous-optimal, pas de pénalité dure (juste gaspillage)
 
-    // Pénalité si cette MP est déjà très présente (diversification)
-    const masseDejaMP = selectionActuelle
-      .filter(s => s.sac.mp_id === sac.mp_id)
-      .reduce((sum, s) => sum + s.taken, 0)
+    const dist = distPolymere + distCouleur + distCharge + penaliteNoirDansClair
+
+    // Pénalité de diversification : éviter qu'une seule MP domine
+    const masseDejaMP = selectionActuelle.filter(s => s.sac.mp_id === sac.mp_id).reduce((sum, s) => sum + s.taken, 0)
     const masseTotal = selectionActuelle.reduce((sum, s) => sum + s.taken, 0)
     const partMP = masseTotal > 0 ? masseDejaMP / masseTotal : 0
     const penaliteConcentration = partMP > 0.4 ? (partMP - 0.4) * 50 : 0
 
-    // Variation aléatoire contrôlée pour explorer d'autres combinaisons
+    // Variation pseudo-aléatoire pour générer des propositions différentes au même seed
     const variation = seed > 0 ? (pseudoRand(idx) - 0.5) * 0.3 * Math.max(distPolymere, 1) : 0
 
-    return -(dist + penaliteConcentration + variation)
+    // Plus c'est BAS, mieux c'est (on minimise)
+    return dist + penaliteConcentration + variation
   }
+
+  // Pool de sacs candidats : copie qu'on va consommer petit à petit
+  // On garde une map id→sac pour pouvoir tracker l'état initial
+  const sacsInitiaux = new Map()
+  for (const s of sacsDispo) sacsInitiaux.set(s.id, { ...s })
 
   const selection = [...selectionForcee]
   let totalMasse = masseDejaCouverte
+  const candidats = [...sacsDispo]
 
-  // Trier les sacs disponibles dynamiquement à chaque étape
-  const sacsDisponibles = [...sacsDispo]
-
+  // ── PHASE 1 : sélection greedy ────────────────────────────────────────────
   let iterations = 0
-  while (totalMasse < masseCible * 0.95 && sacsDisponibles.length > 0 && iterations < 50) {
+  while (totalMasse < masseCible * 0.95 && candidats.length > 0 && iterations < 50) {
     iterations++
 
-    // Re-scorer avec la sélection actuelle (tient compte de la diversification)
-    sacsDisponibles.sort((a, b) => scoreSac(b, selection, sacsDisponibles.indexOf(b)) - scoreSac(a, selection, sacsDisponibles.indexOf(a)))
+    // Bug fix : pré-calculer les scores une seule fois pour ce tri (pas d'indexOf pendant le sort)
+    const scoresMap = new Map()
+    candidats.forEach((sac, idx) => {
+      scoresMap.set(sac, scoreSac(sac, selection, idx))
+    })
+    candidats.sort((a, b) => scoresMap.get(a) - scoresMap.get(b))
 
-    const meilleur = sacsDisponibles[0]
-    sacsDisponibles.splice(0, 1)
-
-    const remaining = masseCible - totalMasse
+    const meilleur = candidats.shift()
     const masseSac = meilleur.masse_kg ?? 0
     if (masseSac <= 0) continue
 
     let taken = masseSac
     let partial = false
 
-    // Utilisation partielle si le sac dépasse ce qu'il reste
-    // Couper le sac dès qu'il ferait dépasser la masse cible de plus de 5%
-    if (totalMasse + taken > masseCible * 1.05) {
-      taken = Math.max(0, Math.round(masseCible * 1.05 - totalMasse))
-      partial = true
+    // Bug fix : viser la masse cible EXACTE, pas 105%
+    // Si le sac entier ferait dépasser la cible, on coupe au plus juste
+    if (totalMasse + taken > masseCible) {
+      taken = Math.max(0, Math.round(masseCible - totalMasse))
+      partial = taken < masseSac
     }
     if (taken <= 0) continue
 
     selection.push({
       sac: meilleur,
-      mp: mpsMap[meilleur.mp_id],
+      mp: mpDuSac(meilleur),
       taken,
       partial,
       forced: false,
@@ -112,123 +127,154 @@ function optimiser(sacsDispo, mpsMap, recette, masseCible, mpsForcees = [], seed
     totalMasse += taken
   }
 
-  // ── Phase d'optimisation fine ──
-  // Calcule la composition courante d'une sélection
+  // ── PHASE 2 : optimisation fine ──────────────────────────────────────────
   function compCourante(sel) {
-    let tot = 0, pp = 0, pe = 0, alu = 0, blanc = 0, noir = 0, sable = 0
+    let tot = 0, pp = 0, pe = 0, alu = 0, blanc = 0, noir = 0, sable = 0, chargeMin = 0
     for (const { mp, taken: t } of sel) {
       if (!mp) continue
-      tot   += t
-      pp    += t * (mp.pct_pp    ?? 0) / 100
-      pe    += t * (mp.pct_pe    ?? 0) / 100
-      alu   += t * (mp.pct_alu   ?? 0) / 100
-      blanc += t * (mp.pct_blanc ?? 0) / 100
-      noir  += t * (mp.pct_noir  ?? 0) / 100
-      sable += t * (mp.pct_sable ?? 0) / 100
+      tot       += t
+      pp        += t * (mp.pct_pp              ?? 0) / 100
+      pe        += t * (mp.pct_pe              ?? 0) / 100
+      alu       += t * (mp.pct_alu             ?? 0) / 100
+      blanc     += t * (mp.pct_blanc           ?? 0) / 100
+      noir      += t * (mp.pct_noir            ?? 0) / 100
+      sable     += t * (mp.pct_sable           ?? 0) / 100
+      chargeMin += t * (mp.pct_charge_minerale ?? 0) / 100
     }
-    const plast = tot > sable ? tot - sable : 1
+    const nonPlast = sable + chargeMin
+    const plast = tot - nonPlast
     return {
       total: tot,
-      pp:    plast > 0 ? pp/plast*100    : 0,
-      pe:    plast > 0 ? pe/plast*100    : 0,
-      alu:   plast > 0 ? alu/plast*100   : 0,
-      blanc: plast > 0 ? blanc/plast*100 : 0,
-      noir:  plast > 0 ? noir/plast*100  : 0,
+      pp:        plast > 0 ? pp/plast*100        : 0,
+      pe:        plast > 0 ? pe/plast*100        : 0,
+      alu:       plast > 0 ? alu/plast*100       : 0,
+      blanc:     plast > 0 ? blanc/plast*100     : 0,
+      noir:      plast > 0 ? noir/plast*100      : 0,
+      ecoLithe:  tot > 0 ? sable/tot*100         : 0,
+      chargeMin: tot > 0 ? chargeMin/tot*100     : 0,
     }
   }
 
-  // Score d'écart global (plus c'est bas, mieux c'est)
   function scoreEcart(comp) {
     return Math.sqrt(
-      Math.pow(comp.pp    - recette.pct_pp_cible,              2) +
-      Math.pow(comp.pe    - recette.pct_pe_cible,              2) +
-      Math.pow(comp.alu   - recette.pct_alu_cible,             2) +
-      Math.pow((comp.blanc - (recette.pct_blanc_cible ?? 0)) * 1.5, 2) +
-      Math.pow((comp.noir  - (recette.pct_noir_cible  ?? 0)) * 2.0, 2)
+      Math.pow(comp.pp        - (recette.pct_pp_cible              ?? 0), 2) +
+      Math.pow(comp.pe        - (recette.pct_pe_cible              ?? 0), 2) +
+      Math.pow(comp.alu       - (recette.pct_alu_cible             ?? 0), 2) +
+      Math.pow((comp.blanc     - (recette.pct_blanc_cible           ?? 0)) * 1.5, 2) +
+      Math.pow((comp.noir      - (recette.pct_noir_cible            ?? 0)) * 2.0, 2) +
+      Math.pow(comp.ecoLithe  - (recette.pct_ecolithe_cible        ?? 0), 2) +
+      Math.pow(comp.chargeMin - (recette.pct_charge_minerale_cible ?? 0), 2)
     )
   }
 
-  // Itérations d'optimisation fine : jusqu'à 5 passes
-  const SEUIL_ECART = 3.0   // % — on affine tant que l'écart dépasse ce seuil
+  const SEUIL_ECART = 3.0
   const MAX_PASSES  = 5
 
-  // Construire le pool de sacs utilisables pour l'ajustement (tous sacs autorisés)
-  const sacsDuPool = [...sacsDispo, ...sacsDisponibles].filter(s => {
-    const mp = mpsMap[s.mp_id]
-    if (!mp) return false
+  // Bug fix : pool dédoublonné. On garde aussi la masse "encore disponible" de chaque sac
+  // (en cas de sac partiel déjà utilisé en phase 1)
+  const sacsParId = new Map()
+  for (const s of sacsDispo) sacsParId.set(s.id, s.masse_kg ?? 0)
+  // candidats non utilisés en phase 1 : leur masse complète est encore dispo
+  // candidats utilisés partiellement : masse restante = masse_initiale - taken
+  for (const sel of selection) {
+    if (sel.forced) continue
+    const restant = (sacsParId.get(sel.sac.id) ?? 0) - sel.taken
+    sacsParId.set(sel.sac.id, Math.max(0, restant))
+  }
+
+  const sacsDuPool = [...sacsDispo].filter(s => {
+    const baseMp = mpsMap[s.mp_id]
+    if (!baseMp) return false
+    const mp = mpDuSac(s)
+    // Filtre noir dans clair (sur la compo EFFECTIVE du sac)
     if ((recette.pct_noir_cible ?? 0) < 5 && (mp.pct_noir ?? 0) > 10) return false
-    const autorisees = mp.recettes_autorisees ?? []
+    // Filtre recettes autorisées (sur la MP de référence, pas l'override)
+    const autorisees = baseMp.recettes_autorisees ?? []
     if (autorisees.length > 0 && !autorisees.includes(recetteId)) return false
     return true
   })
 
   for (let pass = 0; pass < MAX_PASSES; pass++) {
-    const comp = compCourante(selection)
-    const ecartActuel = scoreEcart(comp)
-    if (ecartActuel <= SEUIL_ECART) break  // Assez précis, on s'arrête
+    const compNow = compCourante(selection)
+    const ecartActuel = scoreEcart(compNow)
+    if (ecartActuel <= SEUIL_ECART) break
 
-    // Calculer les écarts par paramètre
-    const ecartPP    = comp.pp    - recette.pct_pp_cible
-    const ecartPE    = comp.pe    - recette.pct_pe_cible
-    const ecartBlanc = comp.blanc - (recette.pct_blanc_cible ?? 0)
-    const ecartNoir  = comp.noir  - (recette.pct_noir_cible  ?? 0)
-
-    // Trouver le meilleur sac correcteur dans le pool
     let meilleurCorrecteur = null
-    let meilleurScore = ecartActuel  // On ne retient que si ça améliore
+    let meilleurScore = ecartActuel
 
     for (const sac of sacsDuPool) {
-      // Ne pas re-sélectionner un sac déjà totalement utilisé
-      const dejaUsed = selection.find(s => s.sac.id === sac.id && !s.partial)
-      if (dejaUsed) continue
-
-      const mp = mpsMap[sac.mp_id]
+      const mp = mpDuSac(sac)
       if (!mp) continue
 
-      // Tester différentes fractions de ce sac (25%, 50%, 75%, 100%)
-      const masseSacDispo = sac.masse_kg ?? 0
+      const masseRestanteDuSac = sacsParId.get(sac.id) ?? 0
+      if (masseRestanteDuSac <= 0) continue
+
+      // Tester différentes fractions DE LA MASSE RESTANTE (pas de la masse initiale)
       for (const fraction of [0.25, 0.5, 0.75, 1.0]) {
-        const masseTest = Math.round(masseSacDispo * fraction)
-        if (masseTest <= 0) continue
+        const ajout = Math.round(masseRestanteDuSac * fraction)
+        if (ajout <= 0) continue
 
-        // Vérifier que l'ajout ne dépasse pas ±5% de la masse cible
         const masseActuelle = selection.reduce((s, x) => s + x.taken, 0)
-        if (masseActuelle + masseTest > masseCible * 1.05) continue
+        // Bug fix : tolérance ±5% strictement
+        if (masseActuelle + ajout > masseCible * 1.05) continue
 
-        // Simuler l'ajout de cette fraction
-        const selTest = [...selection, {
-          sac, mp, taken: masseTest,
-          partial: fraction < 1.0,
-          forced: false,
-        }]
+        // Simuler : ajouter le sac (ou agrandir la ligne s'il y est déjà)
+        const existantIdx = selection.findIndex(s => s.sac.id === sac.id && !s.forced)
+        let selTest
+        if (existantIdx >= 0) {
+          selTest = selection.map((s, i) => i === existantIdx
+            ? { ...s, taken: s.taken + ajout, partial: (s.taken + ajout) < (sac.masse_kg ?? 0) }
+            : s)
+        } else {
+          selTest = [...selection, {
+            sac, mp, taken: ajout,
+            partial: ajout < (sac.masse_kg ?? 0),
+            forced: false,
+          }]
+        }
         const compTest = compCourante(selTest)
         const ecartTest = scoreEcart(compTest)
 
         if (ecartTest < meilleurScore) {
           meilleurScore = ecartTest
-          meilleurCorrecteur = { sac, mp, taken: masseTest, partial: fraction < 1.0 }
+          meilleurCorrecteur = { sac, mp, ajout, existantIdx }
         }
       }
     }
 
-    if (!meilleurCorrecteur) break  // Aucun sac ne peut améliorer
+    if (!meilleurCorrecteur) break
 
-    // Ajouter le correcteur (ou mettre à jour si le sac était déjà en partiel)
-    const existant = selection.findIndex(s => s.sac.id === meilleurCorrecteur.sac.id)
-    if (existant >= 0) {
-      selection[existant] = {
-        ...selection[existant],
-        taken: meilleurCorrecteur.taken,
-        partial: meilleurCorrecteur.partial,
+    const { sac, mp, ajout, existantIdx } = meilleurCorrecteur
+    if (existantIdx >= 0) {
+      const cur = selection[existantIdx]
+      const newTaken = cur.taken + ajout
+      selection[existantIdx] = {
+        ...cur,
+        taken: newTaken,
+        partial: newTaken < (sac.masse_kg ?? 0),
       }
     } else {
-      selection.push({ ...meilleurCorrecteur, forced: false })
+      selection.push({ sac, mp, taken: ajout, partial: ajout < (sac.masse_kg ?? 0), forced: false })
+    }
+    sacsParId.set(sac.id, (sacsParId.get(sac.id) ?? 0) - ajout)
+  }
+
+  // Annoter l'état initial du sac (pour permettre une restauration propre lors d'une suppression)
+  for (const sel of selection) {
+    if (sel.forced) continue
+    const init = sacsInitiaux.get(sel.sac.id)
+    if (init) {
+      sel.masse_avant_kg = init.masse_kg ?? 0
+      sel.statut_avant = init.statut ?? 'disponible'
     }
   }
 
   return selection
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Composant
+// ─────────────────────────────────────────────────────────────────────────────
 export default function Optimiseur() {
   const [recettes, setRecettes] = useState([])
   const [sacs, setSacs] = useState([])
@@ -236,26 +282,22 @@ export default function Optimiseur() {
   const [mpsListe, setMpsListe] = useState([])
   const [loading, setLoading] = useState(true)
 
-  // Paramètres
   const [rcId, setRcId] = useState('')
   const [masseCible, setMasseCible] = useState(5000)
   const [nomBatch, setNomBatch] = useState('')
-  const [mpsForcees, setMpsForcees] = useState([]) // [{ mpId, masse }]
-  const [restrictions, setRestrictions] = useState([]) // [{ mpId, type: 'exclure'|'limiter', maxSacs: number }]
+  const [mpsForcees, setMpsForcees] = useState([])
+  const [restrictions, setRestrictions] = useState([])
 
-  // Résultat + historique des propositions
-  const [propositions, setPropositions] = useState([]) // tableau de sélections
-  const [propIndex, setPropIndex] = useState(-1)       // index courant
+  const [propositions, setPropositions] = useState([])
+  const [propIndex, setPropIndex] = useState(-1)
   const [saving, setSaving] = useState(false)
   const [prefillPending, setPrefillPending] = useState(false)
   const [saved, setSaved] = useState(false)
 
-  // Sélection courante dérivée de l'historique
   const selection = propIndex >= 0 ? propositions[propIndex] : null
 
   useEffect(() => {
     fetchAll()
-    // Lire le prefill si on arrive depuis "Repasser en optimiseur"
     const prefill = localStorage.getItem('optimiseur_prefill')
     if (prefill) {
       try {
@@ -264,17 +306,14 @@ export default function Optimiseur() {
         if (masse) setMasseCible(masse)
         if (nom) setNomBatch(nom)
         localStorage.removeItem('optimiseur_prefill')
-        // Lancer automatiquement après chargement
         setPrefillPending(true)
       } catch(e) {}
     }
   }, [])
 
-  // Déclencher le calcul auto après chargement si prefill en attente
   useEffect(() => {
     if (prefillPending && recettes.length > 0 && sacs.length > 0) {
       setPrefillPending(false)
-      // Petit délai pour que rcId soit bien mis à jour
       setTimeout(() => lancer(), 100)
     }
   }, [prefillPending, recettes, sacs])
@@ -282,19 +321,18 @@ export default function Optimiseur() {
   async function fetchAll() {
     setLoading(true)
     const [{ data: rc }, { data: sacsData }, { data: mpsData }] = await Promise.all([
-      supabase.from('recettes_cibles').select('*').order('id'),
-      supabase.from('sacs').select('*').eq('statut', 'disponible'),
+      supabase.from('recettes_cibles').select('*').eq('archivee', false).order('id'),
+      supabase.from('sacs').select('*').in('statut', ['disponible', 'partiel']),
       supabase.from('matieres_premieres').select('*').order('id'),
     ])
     setRecettes(rc ?? [])
     setSacs(sacsData ?? [])
-    // MP disponibles en stock uniquement (pour le sélecteur de MP forcées)
     const mpIdsEnStock = new Set((sacsData ?? []).map(s => s.mp_id))
     setMpsListe((mpsData ?? []).filter(m => mpIdsEnStock.has(m.id)))
     const map = {}
     for (const mp of (mpsData ?? [])) map[mp.id] = mp
     setMpsMap(map)
-    if (rc?.length) setRcId(rc[0].id)
+    if (rc?.length && !rcId) setRcId(rc[0].id)
     setLoading(false)
   }
 
@@ -308,15 +346,12 @@ export default function Optimiseur() {
   function supprimerRestriction(i) {
     setRestrictions(prev => prev.filter((_, idx) => idx !== i))
   }
-
   function ajouterMpForcee() {
     setMpsForcees(prev => [...prev, { mpId: mpsListe[0]?.id ?? '', masse: 500 }])
   }
-
   function majMpForcee(i, field, value) {
     setMpsForcees(prev => prev.map((f, idx) => idx === i ? { ...f, [field]: value } : f))
   }
-
   function supprimerMpForcee(i) {
     setMpsForcees(prev => prev.filter((_, idx) => idx !== i))
   }
@@ -324,19 +359,17 @@ export default function Optimiseur() {
   function lancer() {
     setSaved(false)
     const recette = recettes.find(r => r.id === rcId)
+    if (!recette) return
     const seed = Math.floor(Math.random() * 100000)
-    // Filtrer les sacs dont la MP n'est pas autorisée pour cette recette
+
     let sacsFiltrés = sacs.filter(sac => {
       const mp = mpsMap[sac.mp_id]
       if (!mp) return false
       const autorisees = mp.recettes_autorisees ?? []
-      // Si la MP a des recettes définies, vérifier que la recette choisie en fait partie
       if (autorisees.length > 0) return autorisees.includes(rcId)
-      // Si aucune recette définie (MP ancienne sans config), on l'inclut quand même
       return true
     })
 
-    // Appliquer les restrictions manuelles : filtrer/limiter les sacs disponibles
     for (const r of restrictions) {
       if (r.type === 'exclure') {
         sacsFiltrés = sacsFiltrés.filter(s => s.mp_id !== r.mpId)
@@ -351,7 +384,6 @@ export default function Optimiseur() {
       }
     }
     const sel = optimiser(sacsFiltrés, mpsMap, recette, masseCible, mpsForcees, seed, rcId)
-    // Tronquer l'historique après l'index courant et ajouter la nouvelle proposition
     const nouvellesProps = [...propositions.slice(0, propIndex + 1), sel]
     setPropositions(nouvellesProps)
     setPropIndex(nouvellesProps.length - 1)
@@ -365,7 +397,6 @@ export default function Optimiseur() {
     const batchId = 'B' + String(Date.now()).slice(-6)
     const nom = nomBatch.trim() || `Batch ${batchId} — ${recette?.nom ?? ''}`
 
-    // Calculer et figer le coût au moment de la création
     const lignesEnrichiesCout = selection.map(({ mp, taken }) => ({ mp, masse_totale_kg: taken }))
     const coutTotal = calcCout(lignesEnrichiesCout)
     const masseTotale = selection.reduce((s, { taken }) => s + taken, 0)
@@ -382,40 +413,42 @@ export default function Optimiseur() {
     })
     if (bErr) { setSaving(false); return }
 
-    const lignes = selection
-      .filter(s => !s.forced)
-      .map(({ sac, taken }, i) => ({
-        batch_id: batchId,
-        mp_id: sac.mp_id,
-        masse_totale_kg: taken,
-        sacs_kg: [taken],
-        ordre: i,
-      }))
+    // Lignes batch : chaque sac sélectionné = une ligne avec snapshot pour restauration
+    // Si le sac avait une composition_override, on la fige dans composition_snapshot
+    // pour que les calculs futurs (affichage batch, historique) restent justes même si
+    // l'override du sac est modifié plus tard.
+    const toLigne = (s, ordre) => ({
+      batch_id: batchId,
+      mp_id: s.sac.mp_id,
+      masse_totale_kg: s.taken,
+      sacs_kg: [s.taken],
+      ordre,
+      sacs_consommes: s.forced
+        ? []
+        : [{
+            sac_id: s.sac.id,
+            masse_prise: s.taken,
+            masse_avant_kg: s.masse_avant_kg ?? (s.sac.masse_kg ?? 0),
+            statut_avant: s.statut_avant ?? 'disponible',
+          }],
+      composition_snapshot: (!s.forced && s.sac.composition_override) ? s.sac.composition_override : null,
+    })
+    const lignesForcees = selection.filter(s => s.forced).map(toLigne)
+    const lignesReelles = selection.filter(s => !s.forced).map((s, i) => toLigne(s, lignesForcees.length + i))
+    await supabase.from('batch_lignes').insert([...lignesForcees, ...lignesReelles])
 
-    // Ajouter les MP forcées comme lignes aussi
-    const lignesForcees = selection
-      .filter(s => s.forced)
-      .map(({ sac, taken }, i) => ({
-        batch_id: batchId,
-        mp_id: sac.mp_id,
-        masse_totale_kg: taken,
-        sacs_kg: [taken],
-        ordre: lignes.length + i,
-      }))
-
-    await supabase.from('batch_lignes').insert([...lignesForcees, ...lignes])
-
-    // Mettre à jour le stock — seulement pour les sacs réels (pas les forcés)
+    // MAJ stock (sacs réels uniquement)
     for (const { sac, taken, partial, forced } of selection) {
       if (forced) continue
       if (partial) {
         await supabase.from('sacs').update({
-          masse_kg: Math.round((sac.masse_kg ?? 0) - taken),
+          masse_kg: Math.max(0, Math.round((sac.masse_kg ?? 0) - taken)),
           statut: 'partiel',
           updated_at: new Date().toISOString(),
         }).eq('id', sac.id)
       } else {
         await supabase.from('sacs').update({
+          masse_kg: 0,
           statut: 'consomme',
           updated_at: new Date().toISOString(),
         }).eq('id', sac.id)
@@ -433,19 +466,22 @@ export default function Optimiseur() {
   }
 
   const recette = recettes.find(r => r.id === rcId)
-
   const comp = selection
     ? calcComposition(selection.map(({ mp, taken }) => ({ mp, masse_totale_kg: taken })))
     : null
+  const coutEstime = selection ? calcCout(selection.map(({ mp, taken }) => ({ mp, masse_totale_kg: taken }))) : 0
+  const masseSelection = selection ? selection.reduce((s, { taken }) => s + taken, 0) : 0
+  const coutParTonneEstime = masseSelection > 0 ? Math.round(coutEstime / masseSelection * 1000) : 0
 
   const COMP_PARAMS = [
-    { key: 'pp',       label: '%PP',       cibleKey: 'pct_pp_cible' },
-    { key: 'pe',       label: '%PE',       cibleKey: 'pct_pe_cible' },
-    { key: 'alu',      label: '%Alu',      cibleKey: 'pct_alu_cible' },
-    { key: 'blanc',    label: '%Blanc',    cibleKey: 'pct_blanc_cible' },
-    { key: 'transp',   label: '%Transp.',  cibleKey: 'pct_transparent_cible' },
-    { key: 'noir',     label: '%Noir',     cibleKey: 'pct_noir_cible' },
-    { key: 'ecoLithe', label: '%EcoLithe', cibleKey: 'pct_ecolithe_cible' },
+    { key: 'pp',        label: '%PP',             cibleKey: 'pct_pp_cible' },
+    { key: 'pe',        label: '%PE',             cibleKey: 'pct_pe_cible' },
+    { key: 'alu',       label: '%Alu',            cibleKey: 'pct_alu_cible' },
+    { key: 'blanc',     label: '%Blanc',          cibleKey: 'pct_blanc_cible' },
+    { key: 'transp',    label: '%Transp.',        cibleKey: 'pct_transparent_cible' },
+    { key: 'noir',      label: '%Noir',           cibleKey: 'pct_noir_cible' },
+    { key: 'ecoLithe',  label: '%EcoLithe',       cibleKey: 'pct_ecolithe_cible' },
+    { key: 'chargeMin', label: '%Charge min.',    cibleKey: 'pct_charge_minerale_cible' },
   ]
 
   return (
@@ -462,7 +498,6 @@ export default function Optimiseur() {
       )}
 
       <div className="bg-white rounded-xl border border-gray-200 p-5 mb-5">
-        {/* Paramètres de base */}
         <div className="grid grid-cols-2 gap-4 mb-4">
           <div>
             <label className="block text-xs text-gray-500 mb-1">Recette cible</label>
@@ -495,7 +530,6 @@ export default function Optimiseur() {
           />
         </div>
 
-        {/* MP forcées */}
         <div className="mb-4">
           <div className="flex items-center justify-between mb-2">
             <p className="text-xs font-medium text-gray-700">Matières imposées <span className="text-gray-400 font-normal">(optionnel — l'algo optimise le reste)</span></p>
@@ -528,7 +562,6 @@ export default function Optimiseur() {
           ))}
         </div>
 
-        {/* Restrictions */}
         <div className="mb-4">
           <div className="flex items-center justify-between mb-2">
             <p className="text-xs font-medium text-gray-700">Restrictions <span className="text-gray-400 font-normal">(exclure ou limiter une MP)</span></p>
@@ -575,7 +608,7 @@ export default function Optimiseur() {
         <div className="flex items-center gap-3 flex-wrap">
           <button
             onClick={lancer}
-            disabled={loading || sacs.length === 0}
+            disabled={loading || (sacs.length === 0 && mpsForcees.length === 0)}
             className="px-4 py-2 text-sm bg-gray-900 text-white rounded-lg hover:bg-gray-700 disabled:opacity-40"
           >
             ⚙ {propositions.length === 0 ? 'Composer le batch' : 'Nouvelle proposition'}
@@ -618,14 +651,21 @@ export default function Optimiseur() {
               ? 'bg-amber-50 text-amber-700 border-amber-200'
               : 'bg-blue-50 text-blue-700 border-blue-200'
             return (
-              <div className={`p-3 rounded-lg border text-sm ${cls}`}>
-                Masse totale proposée : <strong>{Math.round(comp.total).toLocaleString('fr-FR')} kg</strong>
-                {' '}(cible {masseCible.toLocaleString('fr-FR')} kg, écart {ecartPct > 0 ? '+' : ''}{ecartPct}%)
+              <div className={`p-3 rounded-lg border text-sm flex items-center justify-between flex-wrap gap-2 ${cls}`}>
+                <span>
+                  Masse totale proposée : <strong>{Math.round(comp.total).toLocaleString('fr-FR')} kg</strong>
+                  {' '}(cible {masseCible.toLocaleString('fr-FR')} kg, écart {ecartPct > 0 ? '+' : ''}{ecartPct}%)
+                </span>
+                {coutEstime > 0 && (
+                  <span className="text-gray-700">
+                    Coût estimé : <strong>{Math.round(coutEstime).toLocaleString('fr-FR')} €</strong>
+                    {' '}<span className="text-gray-500">({coutParTonneEstime} €/t)</span>
+                  </span>
+                )}
               </div>
             )
           })()}
 
-          {/* Sacs sélectionnés */}
           <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
             <div className="px-5 py-3 border-b border-gray-100">
               <p className="text-sm font-medium text-gray-900">Sacs à utiliser</p>
@@ -659,7 +699,6 @@ export default function Optimiseur() {
             </table>
           </div>
 
-          {/* Composition résultante */}
           {comp && recette && (
             <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
               <div className="px-5 py-3 border-b border-gray-100">

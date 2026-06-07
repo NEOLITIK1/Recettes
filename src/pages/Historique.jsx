@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase.js'
 import { BATCHES } from '../data/seed.js'
-import { calcComposition, calcCout, fmt1 } from '../lib/calculs.js'
+import { calcComposition, calcCout, fmt1, effectiveMp } from '../lib/calculs.js'
 import EcartBadge from '../components/EcartBadge.jsx'
 import Modal from '../components/Modal.jsx'
 
@@ -43,14 +43,17 @@ export default function Historique() {
     for (const batch of BATCHES) {
       const { lignes, ...batchData } = batch
       await supabase.from('batches').upsert({ ...batchData, statut: 'cloture' }, { onConflict: 'id' })
+      // Delete existing lignes for this batch to avoid duplicates on re-import
+      await supabase.from('batch_lignes').delete().eq('batch_id', batch.id)
       const lignesPayload = lignes.map((l, i) => ({
         batch_id: batch.id,
         mp_id: l.mp_id,
         masse_totale_kg: l.masse_totale_kg,
         sacs_kg: l.sacs_kg,
         ordre: i,
+        sacs_consommes: [], // batchs historiques importés : pas de tracking sac source
       }))
-      await supabase.from('batch_lignes').upsert(lignesPayload, { onConflict: 'id' })
+      await supabase.from('batch_lignes').insert(lignesPayload)
     }
     setSeeded(true)
     fetchAll()
@@ -99,6 +102,45 @@ export default function Historique() {
 
   const totalKg = batches.reduce((a, b) => a + b.lignes.reduce((s, l) => s + (l.masse_totale_kg ?? 0), 0), 0)
 
+  // Export CSV (UTF-8 BOM pour Excel)
+  function exportCsv() {
+    const cols = [
+      'ID', 'Nom', 'Date', 'Recette', 'Masse totale (kg)', 'Cout total (EUR)', 'Cout par tonne (EUR/t)',
+      '%PP', '%PE', '%Alu', '%Blanc', '%Transp', '%Noir', '%EcoLithe', '%ChargeMin',
+      'Nb matieres', 'Detail matieres', 'Notes',
+    ]
+    const escape = v => {
+      if (v === null || v === undefined) return ''
+      const s = String(v).replace(/"/g, '""')
+      return /[",;\n\r]/.test(s) ? `"${s}"` : s
+    }
+    const lignesCsv = batches.map(b => {
+      const rc = recettes.find(r => r.id === b.recette_id)
+      const le = b.lignes.map(l => ({ mp: effectiveMp(mpsMap[l.mp_id], l.composition_snapshot), masse_totale_kg: l.masse_totale_kg }))
+      const comp = calcComposition(le) ?? {}
+      const masseTotale = b.lignes.reduce((s, l) => s + (l.masse_totale_kg ?? 0), 0)
+      const cout = b.cout_total_eur ?? calcCout(le)
+      const coutT = b.cout_par_tonne_eur ?? (masseTotale > 0 ? Math.round(cout / masseTotale * 1000) : 0)
+      const detail = b.lignes.map(l => `${mpsMap[l.mp_id]?.nom ?? l.mp_id}: ${Math.round(l.masse_totale_kg)}kg`).join(' | ')
+      return [
+        b.id, b.nom, b.date_creation, rc?.nom ?? '',
+        Math.round(masseTotale), Math.round(cout), coutT,
+        comp.pp?.toFixed(1) ?? '', comp.pe?.toFixed(1) ?? '', comp.alu?.toFixed(1) ?? '',
+        comp.blanc?.toFixed(1) ?? '', comp.transp?.toFixed(1) ?? '', comp.noir?.toFixed(1) ?? '',
+        comp.ecoLithe?.toFixed(1) ?? '', comp.chargeMin?.toFixed(1) ?? '',
+        b.lignes.length, detail, b.notes ?? '',
+      ].map(escape).join(';')
+    })
+    const csv = '﻿' + [cols.join(';'), ...lignesCsv].join('\r\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `neolitik-historique-${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   const COMP_PARAMS = [
     { key: 'pp',       label: '%PP',       cibleKey: 'pct_pp_cible' },
     { key: 'pe',       label: '%PE',       cibleKey: 'pct_pe_cible' },
@@ -113,11 +155,18 @@ export default function Historique() {
           <h1 className="text-xl font-semibold text-gray-900">Historique des batchs</h1>
           <p className="text-sm text-gray-500 mt-0.5">Batchs clôturés</p>
         </div>
-        {batches.length === 0 && !loading && (
-          <button onClick={handleSeed} className="px-3 py-2 text-sm border border-gray-200 rounded-lg hover:bg-gray-50 text-gray-600">
-            Importer 20 batchs historiques
-          </button>
-        )}
+        <div className="flex gap-2">
+          {batches.length > 0 && (
+            <button onClick={exportCsv} className="px-3 py-2 text-sm border border-gray-200 rounded-lg hover:bg-gray-50 text-gray-600">
+              ⬇ Export CSV
+            </button>
+          )}
+          {batches.length === 0 && !loading && (
+            <button onClick={handleSeed} className="px-3 py-2 text-sm border border-gray-200 rounded-lg hover:bg-gray-50 text-gray-600">
+              Importer 20 batchs historiques
+            </button>
+          )}
+        </div>
       </div>
 
       {seeded && (
@@ -145,7 +194,7 @@ export default function Historique() {
         <div className="space-y-3">
           {batches.map(batch => {
             const rc = recettes.find(r => r.id === batch.recette_id)
-            const lignesEnrichies = batch.lignes.map(l => ({ mp: mpsMap[l.mp_id], masse_totale_kg: l.masse_totale_kg }))
+            const lignesEnrichies = batch.lignes.map(l => ({ mp: effectiveMp(mpsMap[l.mp_id], l.composition_snapshot), masse_totale_kg: l.masse_totale_kg }))
             const comp = calcComposition(lignesEnrichies)
             const masseTotale = batch.lignes.reduce((s, l) => s + (l.masse_totale_kg ?? 0), 0)
             // Utiliser le coût figé si disponible, sinon recalculer
@@ -192,7 +241,7 @@ export default function Historique() {
       >
         {detailBatch && (() => {
           const rc = recettes.find(r => r.id === detailBatch.recette_id)
-          const lignesEnrichies = detailBatch.lignes.map(l => ({ mp: mpsMap[l.mp_id], masse_totale_kg: l.masse_totale_kg, sacs_kg: l.sacs_kg }))
+          const lignesEnrichies = detailBatch.lignes.map(l => ({ mp: effectiveMp(mpsMap[l.mp_id], l.composition_snapshot), masse_totale_kg: l.masse_totale_kg, sacs_kg: l.sacs_kg }))
           const comp = calcComposition(lignesEnrichies)
 
           return (
