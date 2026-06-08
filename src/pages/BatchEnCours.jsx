@@ -263,9 +263,33 @@ export default function BatchEnCours() {
     })
 
     // Met à jour le batch pour mémoriser la quantité déclarée en reste
+    const newResteDeclare = (batch.reste_declare_kg ?? 0) + kg
     await supabase.from('batches').update({
-      reste_declare_kg: (batch.reste_declare_kg ?? 0) + kg,
+      reste_declare_kg: newResteDeclare,
     }).eq('id', batch.id)
+
+    // Si de la masse n'est pas comptabilisée (ni consommée, ni en reste), proposer de la solder
+    const totalBatch = masseTotaleBatch(batch)
+    const consoBatch = masseConsommeeBatch(batch)
+    const masseNonComptabilisee = totalBatch - consoBatch - newResteDeclare
+
+    if (masseNonComptabilisee > 0.5) {
+      const ok = confirm(
+        `Reste enregistré : ${Math.round(kg)} kg.\n\n` +
+        `Il reste ${Math.round(masseNonComptabilisee)} kg du batch non comptabilisés (ni consommés, ni en reste).\n\n` +
+        `Voulez-vous les déclarer comme consommés en production aujourd'hui ?\n\n` +
+        `OK → solde le batch en ajoutant une conso "Solde batch" de ${Math.round(masseNonComptabilisee)} kg. Le batch sera prêt à clôturer.\n` +
+        `Annuler → vous compléterez la conso jour par jour avant de clôturer.`
+      )
+      if (ok) {
+        await supabase.from('batch_consommations').insert({
+          batch_id: batch.id,
+          date_consommation: new Date().toISOString().slice(0, 10),
+          masse_kg: Math.round(masseNonComptabilisee),
+          notes: 'Solde batch (auto)',
+        })
+      }
+    }
 
     setModalReste(null)
     setResteKg('')
