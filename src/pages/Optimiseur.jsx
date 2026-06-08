@@ -430,6 +430,10 @@ export default function Optimiseur() {
             masse_prise: s.taken,
             masse_avant_kg: s.masse_avant_kg ?? (s.sac.masse_kg ?? 0),
             statut_avant: s.statut_avant ?? 'disponible',
+            // Snapshot identifiants pour l'impression (résiste à suppression future du sac)
+            reference: s.sac.reference ?? null,
+            fournisseur: s.sac.fournisseur ?? null,
+            numero_lot_fournisseur: s.sac.numero_lot_fournisseur ?? null,
           }],
       composition_snapshot: (!s.forced && s.sac.composition_override) ? s.sac.composition_override : null,
     })

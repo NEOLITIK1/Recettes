@@ -12,6 +12,7 @@ export default function BatchEnCours() {
   const [mpsListe, setMpsListe] = useState([])
   const [loading, setLoading] = useState(true)
   const [openConsoHist, setOpenConsoHist] = useState({}) // batchId → bool
+  const [sacsMap, setSacsMap] = useState({}) // id → sac (pour retrouver réf/fournisseur/lot à l'impression)
 
   // Modal ajout MP
   const [modalAjout, setModalAjout] = useState(null)
@@ -35,18 +36,22 @@ export default function BatchEnCours() {
 
   async function fetchAll() {
     setLoading(true)
-    const [{ data: batchData }, { data: rcData }, { data: mpsData }, { data: lignesData }, { data: consoData }] = await Promise.all([
+    const [{ data: batchData }, { data: rcData }, { data: mpsData }, { data: lignesData }, { data: consoData }, { data: sacsData }] = await Promise.all([
       supabase.from('batches').select('*').eq('statut', 'en_cours').order('created_at', { ascending: false }),
       supabase.from('recettes_cibles').select('*'),
       supabase.from('matieres_premieres').select('*').order('id'),
       supabase.from('batch_lignes').select('*'),
       supabase.from('batch_consommations').select('*').order('date_consommation', { ascending: false }),
+      supabase.from('sacs').select('id, reference, fournisseur, numero_lot_fournisseur'),
     ])
     const mps = {}
     for (const mp of (mpsData ?? [])) mps[mp.id] = mp
     setMpsMap(mps)
     setMpsListe(mpsData ?? [])
     setRecettes(rcData ?? [])
+    const sacsM = {}
+    for (const s of (sacsData ?? [])) sacsM[s.id] = s
+    setSacsMap(sacsM)
 
     const lignesParBatch = {}
     for (const l of (lignesData ?? [])) {
@@ -314,13 +319,53 @@ export default function BatchEnCours() {
       { key: 'chargeMin', label: '%Charge min.', cibleKey: 'pct_charge_minerale_cible' },
     ]
 
+    // Échappement HTML basique pour les valeurs venant de l'utilisateur
+    const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]))
+
+    // Récupère l'identifiant le plus utile pour un sac donné :
+    // 1. snapshot stocké dans sacs_consommes (résiste à la suppression du sac)
+    // 2. sinon, lookup dans sacsMap (sacs courants en DB)
+    function sacInfo(sacEntry) {
+      const fromMap = sacEntry?.sac_id ? sacsMap[sacEntry.sac_id] : null
+      return {
+        reference:              sacEntry?.reference              ?? fromMap?.reference              ?? null,
+        fournisseur:            sacEntry?.fournisseur            ?? fromMap?.fournisseur            ?? null,
+        numero_lot_fournisseur: sacEntry?.numero_lot_fournisseur ?? fromMap?.numero_lot_fournisseur ?? null,
+      }
+    }
+
     const lignesHtml = batch.lignes.map(l => {
       const mp = mpsMap[l.mp_id]
-      const sacsStr = (l.sacs_kg ?? [l.masse_totale_kg]).map((s, i) => `Sac ${i + 1}: ${Math.round(s)} kg`).join(' | ')
+      const sacsConsommes = Array.isArray(l.sacs_consommes) ? l.sacs_consommes : []
+
+      let sacsHtml
+      if (sacsConsommes.length > 0) {
+        // Nouveau format détaillé : référence fournisseur en premier plan
+        sacsHtml = sacsConsommes.map((sc, i) => {
+          const info = sacInfo(sc)
+          const masse = Math.round(sc.masse_prise ?? 0)
+          // Priorité d'affichage : N° lot fournisseur (lisible sur le big bag)
+          const idPrincipal = info.numero_lot_fournisseur
+            ? `<strong>N°lot ${esc(info.numero_lot_fournisseur)}</strong>`
+            : info.reference ? `<strong>${esc(info.reference)}</strong>` : `<strong>Sac ${i + 1}</strong>`
+          const meta = []
+          if (info.fournisseur) meta.push(esc(info.fournisseur))
+          if (info.numero_lot_fournisseur && info.reference) meta.push(`réf. ${esc(info.reference)}`)
+          const metaStr = meta.length ? ` <span style="color:#999;">· ${meta.join(' · ')}</span>` : ''
+          return `<div style="padding:3px 0 3px 10px;border-left:2px solid #ddd;margin:2px 0;">
+            ${idPrincipal}${metaStr} — <strong>${masse} kg</strong>
+          </div>`
+        }).join('')
+      } else {
+        // Fallback pour batchs anciens / manuels sans tracking : juste les masses
+        sacsHtml = (l.sacs_kg ?? [l.masse_totale_kg])
+          .map((s, i) => `Sac ${i + 1}: ${Math.round(s)} kg`).join(' | ')
+      }
+
       return `<tr>
-        <td style="padding:8px;border-bottom:1px solid #eee;">${mp?.nom ?? l.mp_id}</td>
-        <td style="padding:8px;border-bottom:1px solid #eee;text-align:right;font-weight:600;">${Math.round(l.masse_totale_kg)} kg</td>
-        <td style="padding:8px;border-bottom:1px solid #eee;font-size:12px;color:#666;">${sacsStr}</td>
+        <td style="padding:8px;border-bottom:1px solid #eee;vertical-align:top;">${esc(mp?.nom ?? l.mp_id)}</td>
+        <td style="padding:8px;border-bottom:1px solid #eee;text-align:right;font-weight:600;vertical-align:top;">${Math.round(l.masse_totale_kg)} kg</td>
+        <td style="padding:8px;border-bottom:1px solid #eee;font-size:12px;color:#666;">${sacsHtml}</td>
       </tr>`
     }).join('')
 
