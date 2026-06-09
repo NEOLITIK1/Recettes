@@ -15,17 +15,34 @@ function optimiser(sacsDispo, mpsMap, recette, masseCible, mpsForcees = [], seed
     return x - Math.floor(x)
   }
 
-  // 1. MP forcées : lignes virtuelles à inclure obligatoirement
-  const selectionForcee = mpsForcees
-    .filter(f => f.mpId && f.masse > 0)
-    .map(f => ({
-      sac: { id: 'forced-' + f.mpId, mp_id: f.mpId, masse_kg: parseFloat(f.masse), reference: 'Forcé', statut: 'disponible' },
-      mp: mpsMap[f.mpId],
-      taken: parseFloat(f.masse),
-      partial: false,
-      forced: true,
-    }))
-    .filter(f => f.mp)
+  // 1. MP forcées : sélection de VRAIS sacs du stock pour couvrir la masse imposée
+  // (au lieu d'un sac virtuel, on prend les sacs réels les plus lourds en premier)
+  const idsDejaForcees = new Set()
+  const selectionForcee = []
+  for (const f of mpsForcees) {
+    if (!f.mpId || parseFloat(f.masse) <= 0 || !mpsMap[f.mpId]) continue
+    let masseRestante = parseFloat(f.masse)
+    const sacsDeMP = [...sacsDispo]
+      .filter(s => s.mp_id === f.mpId && !idsDejaForcees.has(s.id))
+      .sort((a, b) => (b.masse_kg ?? 0) - (a.masse_kg ?? 0))
+    for (const sac of sacsDeMP) {
+      if (masseRestante <= 0) break
+      const masseSac = sac.masse_kg ?? 0
+      if (masseSac <= 0) continue
+      const taken = Math.min(masseSac, masseRestante)
+      selectionForcee.push({
+        sac,
+        mp: effectiveMp(mpsMap[sac.mp_id], sac.composition_override),
+        taken,
+        partial: taken < masseSac,
+        forced: true,
+        masse_avant_kg: masseSac,
+        statut_avant: sac.statut ?? 'disponible',
+      })
+      idsDejaForcees.add(sac.id)
+      masseRestante -= taken
+    }
+  }
 
   const masseDejaCouverte = selectionForcee.reduce((s, f) => s + f.taken, 0)
   const masseRestante = masseCible - masseDejaCouverte
@@ -88,7 +105,8 @@ function optimiser(sacsDispo, mpsMap, recette, masseCible, mpsForcees = [], seed
 
   const selection = [...selectionForcee]
   let totalMasse = masseDejaCouverte
-  const candidats = [...sacsDispo]
+  // Exclure du pool greedy les sacs déjà assignés aux MP forcées
+  const candidats = sacsDispo.filter(s => !idsDejaForcees.has(s.id))
 
   // ── PHASE 1 : sélection greedy ────────────────────────────────────────────
   let iterations = 0
@@ -182,7 +200,8 @@ function optimiser(sacsDispo, mpsMap, recette, masseCible, mpsForcees = [], seed
     sacsParId.set(sel.sac.id, Math.max(0, restant))
   }
 
-  const sacsDuPool = [...sacsDispo].filter(s => {
+  const sacsDuPool = sacsDispo.filter(s => {
+    if (idsDejaForcees.has(s.id)) return false  // déjà utilisé en forcé
     const baseMp = mpsMap[s.mp_id]
     if (!baseMp) return false
     const mp = mpDuSac(s)
@@ -423,27 +442,24 @@ export default function Optimiseur() {
       masse_totale_kg: s.taken,
       sacs_kg: [s.taken],
       ordre,
-      sacs_consommes: s.forced
-        ? []
-        : [{
-            sac_id: s.sac.id,
-            masse_prise: s.taken,
-            masse_avant_kg: s.masse_avant_kg ?? (s.sac.masse_kg ?? 0),
-            statut_avant: s.statut_avant ?? 'disponible',
-            // Snapshot identifiants pour l'impression (résiste à suppression future du sac)
-            reference: s.sac.reference ?? null,
-            fournisseur: s.sac.fournisseur ?? null,
-            numero_lot_fournisseur: s.sac.numero_lot_fournisseur ?? null,
-          }],
-      composition_snapshot: (!s.forced && s.sac.composition_override) ? s.sac.composition_override : null,
+      // Tous les sacs sont maintenant de vrais sacs (forcés ou non) → snapshot complet
+      sacs_consommes: [{
+          sac_id: s.sac.id,
+          masse_prise: s.taken,
+          masse_avant_kg: s.masse_avant_kg ?? (s.sac.masse_kg ?? 0),
+          statut_avant: s.statut_avant ?? 'disponible',
+          // Snapshot identifiants pour l'impression (résiste à suppression future du sac)
+          reference: s.sac.reference ?? null,
+          fournisseur: s.sac.fournisseur ?? null,
+          numero_lot_fournisseur: s.sac.numero_lot_fournisseur ?? null,
+        }],
+      composition_snapshot: s.sac.composition_override ?? null,
     })
-    const lignesForcees = selection.filter(s => s.forced).map(toLigne)
-    const lignesReelles = selection.filter(s => !s.forced).map((s, i) => toLigne(s, lignesForcees.length + i))
-    await supabase.from('batch_lignes').insert([...lignesForcees, ...lignesReelles])
+    const lignes = selection.map((s, i) => toLigne(s, i))
+    await supabase.from('batch_lignes').insert(lignes)
 
-    // MAJ stock (sacs réels uniquement)
-    for (const { sac, taken, partial, forced } of selection) {
-      if (forced) continue
+    // MAJ stock (tous les sacs, y compris ceux des MP forcées, sont de vrais sacs)
+    for (const { sac, taken, partial } of selection) {
       if (partial) {
         await supabase.from('sacs').update({
           masse_kg: Math.max(0, Math.round((sac.masse_kg ?? 0) - taken)),
@@ -687,9 +703,14 @@ export default function Optimiseur() {
                 {selection.map(({ sac, mp, taken, partial, forced }, i) => (
                   <tr key={i} className={forced ? 'bg-blue-50' : 'hover:bg-gray-50'}>
                     <td className="px-4 py-3 font-mono text-xs text-gray-400">
-                      {forced ? '—' : (sac.reference || '—')}
+                      {sac.reference || '—'}
                     </td>
-                    <td className="px-4 py-3 text-gray-900">{mp?.nom ?? sac.mp_id}</td>
+                    <td className="px-4 py-3 text-gray-900">
+                      {mp?.nom ?? sac.mp_id}
+                      {sac.numero_lot_fournisseur && (
+                        <span className="ml-2 text-xs text-gray-400">N°{sac.numero_lot_fournisseur}</span>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-right font-semibold tabular-nums">
                       {Math.round(taken).toLocaleString('fr-FR')} kg
                     </td>
