@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase.js'
 import { BATCHES } from '../data/seed.js'
 import { calcComposition, calcCout, fmt1, effectiveMp } from '../lib/calculs.js'
+import { restaurerSacsConsommes } from '../lib/batchOps.js'
 import EcartBadge from '../components/EcartBadge.jsx'
 import Modal from '../components/Modal.jsx'
 
@@ -73,21 +74,44 @@ export default function Historique() {
     if (!batch) return
 
     if (reinintegrer) {
-      // Remettre chaque MP du batch en stock comme nouveau sac
-      for (const ligne of batch.lignes) {
+      // Lignes avec tracking : restaurer les VRAIS sacs sources (masse + statut,
+      // composition spécifique préservée). Lignes sans tracking (batchs anciens
+      // ou importés) : recréer un nouveau sac générique de la MP.
+      const lignesTrackees = batch.lignes.filter(l => Array.isArray(l.sacs_consommes) && l.sacs_consommes.length > 0)
+      const lignesSansTracking = batch.lignes.filter(l => !Array.isArray(l.sacs_consommes) || l.sacs_consommes.length === 0)
+      await restaurerSacsConsommes(lignesTrackees)
+      for (const ligne of lignesSansTracking) {
         if (!ligne.mp_id || !ligne.masse_totale_kg) continue
-        await supabase.from('sacs').insert({
+        const { error } = await supabase.from('sacs').insert({
           mp_id: ligne.mp_id,
           masse_kg: ligne.masse_totale_kg,
           reference: `Récupéré-${batch.id}`,
           statut: 'disponible',
+          // Préserver la composition figée de la ligne si elle existait
+          composition_override: ligne.composition_snapshot ?? null,
         })
+        if (error) alert(`Erreur : le sac "${ligne.mp_id}" n'a pas pu être recréé en stock.\n${error.message}`)
       }
     }
 
+    await supabase.from('batch_consommations').delete().eq('batch_id', batch.id)
     await supabase.from('batch_lignes').delete().eq('batch_id', batch.id)
-    await supabase.from('batches').delete().eq('id', batch.id)
+    const { error: bErr } = await supabase.from('batches').delete().eq('id', batch.id)
+    if (bErr) alert(`Erreur lors de la suppression du batch.\n${bErr.message}`)
     setModalSuppr(null)
+    fetchAll()
+  }
+
+  // Rouvrir un batch clôturé : il repasse dans "Batchs en cours" où toutes les
+  // actions redeviennent possibles (déclarer un reste oublié, corriger une
+  // consommation…), puis on le re-clôture.
+  async function rouvrirBatch(batch) {
+    if (!confirm(`Rouvrir le batch "${batch.nom}" ?\n\nIl repassera dans "Batchs en cours" où vous pourrez déclarer un reste oublié ou corriger les consommations, puis le clôturer à nouveau.`)) return
+    const { error } = await supabase.from('batches').update({ statut: 'en_cours' }).eq('id', batch.id)
+    if (error) {
+      alert(`Erreur : le batch n'a pas pu être rouvert.\n${error.message}`)
+      return
+    }
     fetchAll()
   }
 
@@ -215,6 +239,13 @@ export default function Historique() {
                   <div className="flex gap-2">
                     <button onClick={() => openDetail(batch)} className="text-xs px-3 py-1.5 border border-gray-200 rounded-lg hover:bg-gray-50">
                       Détail
+                    </button>
+                    <button
+                      onClick={() => rouvrirBatch(batch)}
+                      title="Repasser en 'Batchs en cours' pour déclarer un reste oublié ou corriger les consommations"
+                      className="text-xs px-3 py-1.5 border border-amber-200 text-amber-700 rounded-lg hover:bg-amber-50"
+                    >
+                      ↩ Rouvrir
                     </button>
                     <button onClick={() => supprimerBatch(batch)} className="text-xs px-3 py-1.5 border border-red-100 text-red-600 rounded-lg hover:bg-red-50">
                       Supprimer
@@ -351,8 +382,11 @@ export default function Historique() {
               })}
             </div>
             <p className="text-xs text-gray-400">
-              "Récupérer en stock" crée de nouveaux sacs disponibles pour les prochains batchs.
-              "Supprimer sans récupérer" efface le batch définitivement sans toucher au stock.
+              "Récupérer en stock" restaure les sacs d'origine (masse et statut) quand le batch
+              a tracé ses sacs sources, sinon recrée des sacs équivalents — à utiliser si la
+              matière existe encore physiquement.
+              "Supprimer sans récupérer" efface le batch définitivement sans toucher au stock
+              — à utiliser si la matière a réellement été consommée.
             </p>
           </div>
         )}

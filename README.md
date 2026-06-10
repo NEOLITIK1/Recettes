@@ -112,7 +112,7 @@ src/
     └── Historique.jsx    # Batchs clôturés + export CSV
 supabase/
 ├── schema.sql            # Schéma complet (installation neuve)
-└── migration-v6/7/8.sql  # Migrations incrémentales (base existante)
+└── migration-v6→v9.sql   # Migrations incrémentales (base existante)
 ```
 
 ---

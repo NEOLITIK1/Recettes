@@ -1,18 +1,19 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase.js'
-import { calcComposition, calcCout, fmt1 } from '../lib/calculs.js'
+import { calcComposition, calcCout, fmt1, effectiveMp } from '../lib/calculs.js'
+import { creerBatchAvecStock, lignePourSac, sacUpdatePourPrise } from '../lib/batchOps.js'
 import EcartBadge from '../components/EcartBadge.jsx'
 
 export default function ManuelBatch() {
   const [recettes, setRecettes] = useState([])
-  const [mpsListe, setMpsListe] = useState([])
+  const [sacs, setSacs] = useState([])
   const [mpsMap, setMpsMap] = useState({})
   const [loading, setLoading] = useState(true)
 
   const [rcId, setRcId] = useState('')
   const [nomBatch, setNomBatch] = useState('')
-  // lignes : [{ mpId, masse, sacs: [kg, kg, ...] }]
-  const [lignes, setLignes] = useState([])
+  // prises : [{ sacId, taken }] — chaque ligne est un prélèvement sur un vrai sac du stock
+  const [prises, setPrises] = useState([])
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
 
@@ -20,12 +21,13 @@ export default function ManuelBatch() {
 
   async function fetchAll() {
     setLoading(true)
-    const [{ data: rc }, { data: mpsData }] = await Promise.all([
+    const [{ data: rc }, { data: sacsData }, { data: mpsData }] = await Promise.all([
       supabase.from('recettes_cibles').select('*').eq('archivee', false).order('id'),
+      supabase.from('sacs').select('*').in('statut', ['disponible', 'partiel']).order('created_at', { ascending: false }),
       supabase.from('matieres_premieres').select('*').order('id'),
     ])
     setRecettes(rc ?? [])
-    setMpsListe(mpsData ?? [])
+    setSacs(sacsData ?? [])
     const map = {}
     for (const mp of (mpsData ?? [])) map[mp.id] = mp
     setMpsMap(map)
@@ -33,45 +35,45 @@ export default function ManuelBatch() {
     setLoading(false)
   }
 
-  function ajouterLigne() {
-    setLignes(prev => [...prev, { mpId: mpsListe[0]?.id ?? '', sacs: [0] }])
+  const sacById = Object.fromEntries(sacs.map(s => [s.id, s]))
+  const sacsDejaPris = new Set(prises.map(p => p.sacId).filter(Boolean))
+
+  function labelSac(sac) {
+    const mp = mpsMap[sac.mp_id]
+    const ref = sac.reference || (sac.numero_lot_fournisseur ? `N°${sac.numero_lot_fournisseur}` : sac.id.slice(0, 8))
+    const fourn = sac.fournisseur ? ` · ${sac.fournisseur}` : ''
+    return `${ref} — ${mp?.nom ?? sac.mp_id} — ${Math.round(sac.masse_kg ?? 0)} kg${fourn}`
   }
 
-  function supprimerLigne(i) {
-    setLignes(prev => prev.filter((_, idx) => idx !== i))
+  function ajouterPrise() {
+    setPrises(prev => [...prev, { sacId: '', taken: '' }])
+  }
+  function supprimerPrise(i) {
+    setPrises(prev => prev.filter((_, idx) => idx !== i))
+  }
+  function majPrise(i, field, value) {
+    setPrises(prev => prev.map((p, idx) => {
+      if (idx !== i) return p
+      if (field === 'sacId') {
+        // Pré-remplir la masse avec la masse disponible du sac
+        const sac = sacById[value]
+        return { sacId: value, taken: sac ? String(Math.round(sac.masse_kg ?? 0)) : '' }
+      }
+      return { ...p, [field]: value }
+    }))
   }
 
-  function majMp(i, mpId) {
-    setLignes(prev => prev.map((l, idx) => idx === i ? { ...l, mpId } : l))
-  }
+  // Sélection effective (sacs valides + masse > 0) pour calculs temps réel
+  const selection = prises
+    .map(p => ({ sac: sacById[p.sacId], taken: parseFloat(p.taken) || 0 }))
+    .filter(s => s.sac && s.taken > 0)
 
-  function ajouterSac(ligneIdx) {
-    setLignes(prev => prev.map((l, idx) =>
-      idx === ligneIdx ? { ...l, sacs: [...l.sacs, 0] } : l
-    ))
-  }
-
-  function supprimerSac(ligneIdx, sacIdx) {
-    setLignes(prev => prev.map((l, idx) =>
-      idx === ligneIdx ? { ...l, sacs: l.sacs.filter((_, si) => si !== sacIdx) } : l
-    ))
-  }
-
-  function majSac(ligneIdx, sacIdx, val) {
-    setLignes(prev => prev.map((l, idx) =>
-      idx === ligneIdx
-        ? { ...l, sacs: l.sacs.map((s, si) => si === sacIdx ? parseFloat(val) || 0 : s) }
-        : l
-    ))
-  }
-
-  // Calcul composition en temps réel
-  const lignesEnrichies = lignes.map(l => ({
-    mp: mpsMap[l.mpId],
-    masse_totale_kg: l.sacs.reduce((s, v) => s + v, 0),
-  })).filter(l => l.mp && l.masse_totale_kg > 0)
-
+  const lignesEnrichies = selection.map(({ sac, taken }) => ({
+    mp: effectiveMp(mpsMap[sac.mp_id], sac.composition_override),
+    masse_totale_kg: taken,
+  }))
   const comp = lignesEnrichies.length > 0 ? calcComposition(lignesEnrichies) : null
+  const coutTotal = calcCout(lignesEnrichies)
   const recette = recettes.find(r => r.id === rcId)
 
   const COMP_PARAMS = [
@@ -86,22 +88,31 @@ export default function ManuelBatch() {
   ]
 
   async function valider() {
-    if (!lignes.length || !rcId) return
-    setSaving(true)
+    if (!selection.length || !rcId) return
 
+    // Validations : masse prélevée ≤ masse du sac, pas de sac en double
+    const idsVus = new Set()
+    for (const { sac, taken } of selection) {
+      if (idsVus.has(sac.id)) {
+        alert(`Le sac "${labelSac(sac)}" apparaît deux fois. Fusionnez les lignes.`)
+        return
+      }
+      idsVus.add(sac.id)
+      if (taken > (sac.masse_kg ?? 0) + 0.5) {
+        alert(`Le sac "${labelSac(sac)}" ne contient que ${Math.round(sac.masse_kg)} kg — impossible d'en prélever ${Math.round(taken)} kg.`)
+        return
+      }
+    }
+
+    setSaving(true)
     // Base 36 du timestamp : unique à la milliseconde, pas de cycle de réutilisation
     const batchId = 'B' + Date.now().toString(36).toUpperCase()
     const nom = nomBatch.trim() || `Batch ${batchId} — ${recette?.nom ?? ''} (manuel)`
 
-    // Calculer et figer le coût au moment de la création
-    const lignesEnrichiesCout = lignes
-      .filter(l => l.sacs.reduce((s, v) => s + v, 0) > 0)
-      .map(l => ({ mp: mpsMap[l.mpId], masse_totale_kg: l.sacs.reduce((s, v) => s + v, 0) }))
-    const coutTotal = calcCout(lignesEnrichiesCout)
-    const masseTotaleKg = lignesEnrichiesCout.reduce((s, l) => s + l.masse_totale_kg, 0)
+    const masseTotaleKg = selection.reduce((s, { taken }) => s + taken, 0)
     const coutParTonne = masseTotaleKg > 0 ? coutTotal / masseTotaleKg * 1000 : 0
 
-    const { error } = await supabase.from('batches').insert({
+    const batch = {
       id: batchId,
       nom,
       recette_id: rcId,
@@ -109,48 +120,32 @@ export default function ManuelBatch() {
       statut: 'en_cours',
       cout_total_eur: Math.round(coutTotal),
       cout_par_tonne_eur: Math.round(coutParTonne),
-    })
-    if (error) {
-      setSaving(false)
-      alert(`Erreur : le batch n'a pas pu être créé.\n${error.message}`)
-      return
     }
+    const lignes = selection.map(({ sac, taken }, i) => lignePourSac(sac, taken, i))
+    const sacUpdates = selection.map(({ sac, taken }) => sacUpdatePourPrise(sac, taken))
 
-    const lignesPayload = lignes
-      .filter(l => l.sacs.reduce((s, v) => s + v, 0) > 0)
-      .map((l, i) => ({
-        batch_id: batchId,
-        mp_id: l.mpId,
-        masse_totale_kg: l.sacs.reduce((s, v) => s + v, 0),
-        sacs_kg: l.sacs.filter(s => s > 0),
-        ordre: i,
-        sacs_consommes: [], // mode manuel : pas de lien sac → restauration auto impossible
-      }))
-
-    const { error: lErr } = await supabase.from('batch_lignes').insert(lignesPayload)
-    if (lErr) {
-      await supabase.from('batches').delete().eq('id', batchId)
-      setSaving(false)
-      alert(`Erreur : les lignes du batch n'ont pas pu être enregistrées.\n${lErr.message}`)
-      return
-    }
-
+    const err = await creerBatchAvecStock(batch, lignes, sacUpdates)
     setSaving(false)
+    if (err) {
+      alert(`Erreur : le batch n'a pas pu être créé (stock inchangé).\n${err.message}`)
+      return
+    }
     setSaved(true)
-    setLignes([])
+    setPrises([])
     setNomBatch('')
+    fetchAll()
   }
 
   return (
     <div>
       <div className="mb-6">
         <h1 className="text-xl font-semibold text-gray-900">Composition manuelle</h1>
-        <p className="text-sm text-gray-500 mt-0.5">Composez un batch librement, sac par sac</p>
+        <p className="text-sm text-gray-500 mt-0.5">Composez un batch en prélevant des sacs du stock — le stock est mis à jour à la validation</p>
       </div>
 
       {saved && (
         <div className="mb-4 p-3 bg-emerald-50 text-emerald-700 rounded-lg text-sm">
-          ✓ Batch créé et disponible dans <strong>Batchs en cours</strong>.
+          ✓ Batch créé, stock mis à jour. Disponible dans <strong>Batchs en cours</strong>.
         </div>
       )}
 
@@ -177,53 +172,58 @@ export default function ManuelBatch() {
           </div>
         </div>
 
-        {/* Lignes de matières */}
-        <div className="mb-4 space-y-3">
-          {lignes.map((ligne, li) => (
-            <div key={li} className="border border-gray-100 rounded-lg p-3 bg-gray-50">
-              <div className="flex items-center gap-2 mb-2">
+        {/* Prélèvements sur le stock */}
+        <div className="mb-4 space-y-2">
+          {prises.length === 0 && (
+            <p className="text-xs text-gray-400 italic">Aucun sac sélectionné — cliquez sur "+ Prélever un sac".</p>
+          )}
+          {prises.map((p, i) => {
+            const sac = sacById[p.sacId]
+            const taken = parseFloat(p.taken) || 0
+            const depasse = sac && taken > (sac.masse_kg ?? 0) + 0.5
+            return (
+              <div key={i} className="flex gap-2 items-center flex-wrap border border-gray-100 rounded-lg p-2 bg-gray-50">
                 <select
-                  value={ligne.mpId}
-                  onChange={e => majMp(li, e.target.value)}
-                  className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:border-gray-400"
+                  value={p.sacId}
+                  onChange={e => majPrise(i, 'sacId', e.target.value)}
+                  className="flex-1 min-w-[280px] text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:border-gray-400"
                 >
-                  {mpsListe.map(m => <option key={m.id} value={m.id}>{m.id} — {m.nom}</option>)}
+                  <option value="">Sélectionner un sac…</option>
+                  {sacs
+                    .filter(s => s.id === p.sacId || !sacsDejaPris.has(s.id))
+                    .map(s => <option key={s.id} value={s.id}>{labelSac(s)}</option>)}
                 </select>
-                <button onClick={() => supprimerLigne(li)} className="text-red-400 hover:text-red-600 text-xl leading-none px-1">×</button>
+                <input
+                  type="number" min="1"
+                  value={p.taken}
+                  onChange={e => majPrise(i, 'taken', e.target.value)}
+                  placeholder="kg"
+                  className={`w-28 text-sm border rounded-lg px-3 py-2 bg-white focus:outline-none ${depasse ? 'border-red-400 text-red-600' : 'border-gray-200 focus:border-gray-400'}`}
+                />
+                <span className="text-xs text-gray-400">kg{sac ? ` / ${Math.round(sac.masse_kg ?? 0)} dispo` : ''}</span>
+                {sac?.composition_override && (
+                  <span title="Composition spécifique au sac" className="text-xs bg-purple-50 text-purple-700 px-1.5 py-0.5 rounded">spéc.</span>
+                )}
+                {depasse && <span className="text-xs text-red-600">⚠ dépasse le sac</span>}
+                <button onClick={() => supprimerPrise(i)} className="text-red-400 hover:text-red-600 text-xl leading-none px-1">×</button>
               </div>
-              {/* Sacs */}
-              <div className="flex flex-wrap gap-2 items-center">
-                <span className="text-xs text-gray-500">Sacs :</span>
-                {ligne.sacs.map((s, si) => (
-                  <div key={si} className="flex items-center gap-1">
-                    <input
-                      type="number" min="0"
-                      value={s || ''}
-                      onChange={e => majSac(li, si, e.target.value)}
-                      placeholder="kg"
-                      className="w-24 text-sm border border-gray-200 rounded px-2 py-1 bg-white focus:outline-none focus:border-gray-400"
-                    />
-                    <span className="text-xs text-gray-400">kg</span>
-                    {ligne.sacs.length > 1 && (
-                      <button onClick={() => supprimerSac(li, si)} className="text-gray-300 hover:text-red-400 text-sm">×</button>
-                    )}
-                  </div>
-                ))}
-                <button onClick={() => ajouterSac(li)} className="text-xs text-blue-600 hover:text-blue-800 px-2 py-1 border border-blue-200 rounded">
-                  + sac
-                </button>
-                <span className="text-xs text-gray-400 ml-1">
-                  Total : <strong>{ligne.sacs.reduce((s, v) => s + v, 0).toLocaleString('fr-FR')} kg</strong>
-                </span>
-              </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
 
-        <div className="flex gap-2">
-          <button onClick={ajouterLigne} className="px-3 py-2 text-sm border border-gray-200 rounded-lg hover:bg-gray-50">
-            + Ajouter une matière
+        <div className="flex gap-2 items-center flex-wrap">
+          <button onClick={ajouterPrise} disabled={loading || sacs.length === 0} className="px-3 py-2 text-sm border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-40">
+            + Prélever un sac
           </button>
+          {sacs.length === 0 && !loading && (
+            <p className="text-xs text-amber-600">Aucun sac disponible — ajoutez des sacs dans Stock.</p>
+          )}
+          {selection.length > 0 && (
+            <span className="text-xs text-gray-500 ml-1">
+              {selection.length} sac{selection.length !== 1 ? 's' : ''} · Total : <strong>{Math.round(selection.reduce((s, x) => s + x.taken, 0)).toLocaleString('fr-FR')} kg</strong>
+              {coutTotal > 0 && <> · {Math.round(coutTotal).toLocaleString('fr-FR')} €</>}
+            </span>
+          )}
         </div>
       </div>
 
@@ -259,13 +259,13 @@ export default function ManuelBatch() {
         </div>
       )}
 
-      {lignes.length > 0 && (
+      {selection.length > 0 && (
         <button
           onClick={valider}
           disabled={saving}
           className="w-full py-3 text-sm bg-gray-900 text-white rounded-xl hover:bg-gray-700 disabled:opacity-40 font-medium"
         >
-          {saving ? 'Enregistrement…' : '✓ Valider et créer le batch'}
+          {saving ? 'Enregistrement…' : '✓ Valider, créer le batch et décompter le stock'}
         </button>
       )}
     </div>

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase.js'
 import { calcComposition, calcCout, fmt1, effectiveMp } from '../lib/calculs.js'
+import { restaurerSacsConsommes, lignesRestaurables, lignePourSac, sacUpdatePourPrise } from '../lib/batchOps.js'
 import EcartBadge from '../components/EcartBadge.jsx'
 import Modal from '../components/Modal.jsx'
 
@@ -9,15 +10,14 @@ export default function BatchEnCours() {
   const [batches, setBatches] = useState([])
   const [recettes, setRecettes] = useState([])
   const [mpsMap, setMpsMap] = useState({})
-  const [mpsListe, setMpsListe] = useState([])
   const [loading, setLoading] = useState(true)
   const [openConsoHist, setOpenConsoHist] = useState({}) // batchId → bool
   const [sacsMap, setSacsMap] = useState({}) // id → sac (pour retrouver réf/fournisseur/lot à l'impression)
 
-  // Modal ajout MP
+  // Modal ajout de sacs du stock
   const [modalAjout, setModalAjout] = useState(null)
-  const [ajoutMpId, setAjoutMpId] = useState('')
-  const [ajoutSacs, setAjoutSacs] = useState([0])
+  const [ajoutPrises, setAjoutPrises] = useState([])
+  const [sacsStock, setSacsStock] = useState([]) // sacs dispo/partiel pour l'ajout
 
   // Modal reste
   const [modalReste, setModalReste] = useState(null)
@@ -42,16 +42,16 @@ export default function BatchEnCours() {
       supabase.from('matieres_premieres').select('*').order('id'),
       supabase.from('batch_lignes').select('*'),
       supabase.from('batch_consommations').select('*').order('date_consommation', { ascending: false }),
-      supabase.from('sacs').select('id, reference, fournisseur, numero_lot_fournisseur'),
+      supabase.from('sacs').select('*'),
     ])
     const mps = {}
     for (const mp of (mpsData ?? [])) mps[mp.id] = mp
     setMpsMap(mps)
-    setMpsListe(mpsData ?? [])
     setRecettes(rcData ?? [])
     const sacsM = {}
     for (const s of (sacsData ?? [])) sacsM[s.id] = s
     setSacsMap(sacsM)
+    setSacsStock((sacsData ?? []).filter(s => s.statut === 'disponible' || s.statut === 'partiel'))
 
     const lignesParBatch = {}
     for (const l of (lignesData ?? [])) {
@@ -89,46 +89,20 @@ export default function BatchEnCours() {
     return { total, consommee, reste, restanteMelange, nonComptabilise, ecartPct }
   }
 
-  // ── Restauration des sacs depuis sacs_consommes ────────────────────────────
-  // Ajoute la masse prise à chaque sac source et restaure son statut.
-  // Robuste si d'autres batchs ont touché le sac entretemps (on additionne sans dépasser l'état initial).
-  async function restaurerSacsBatch(batch) {
-    for (const ligne of batch.lignes) {
-      const sc = ligne.sacs_consommes ?? []
-      if (!Array.isArray(sc) || sc.length === 0) continue
-      for (const entry of sc) {
-        if (!entry?.sac_id) continue
-        const { data: sacActuel } = await supabase
-          .from('sacs')
-          .select('id, masse_kg, statut')
-          .eq('id', entry.sac_id)
-          .maybeSingle()
-        if (!sacActuel) continue // sac supprimé entretemps, on ne peut rien restaurer
-        const masseRestauree = (sacActuel.masse_kg ?? 0) + (entry.masse_prise ?? 0)
-        const masseAvant = entry.masse_avant_kg ?? masseRestauree
-        const statutFinal = masseRestauree >= masseAvant - 0.5
-          ? (entry.statut_avant ?? 'disponible')
-          : 'partiel'
-        await supabase.from('sacs').update({
-          masse_kg: Math.round(masseRestauree),
-          statut: statutFinal,
-          updated_at: new Date().toISOString(),
-        }).eq('id', entry.sac_id)
-      }
-    }
-  }
-
   // ── Repasser en optimiseur ─────────────────────────────────────────────────
   async function repasserEnOptimiseur(batch) {
     if (!confirm(`Repasser le batch "${batch.nom}" en optimiseur ? Les sacs originaux seront restaurés en stock.`)) return
-    await restaurerSacsBatch(batch)
+    await restaurerSacsConsommes(batch.lignes)
     await supabase.from('batch_consommations').delete().eq('batch_id', batch.id)
     await supabase.from('batch_lignes').delete().eq('batch_id', batch.id)
     await supabase.from('batches').delete().eq('id', batch.id)
+    // Restituer aussi les MP imposées / restrictions mémorisées à la création
     localStorage.setItem('optimiseur_prefill', JSON.stringify({
       recetteId: batch.recette_id,
       masse: Math.round(masseTotaleBatch(batch)),
       nom: batch.nom,
+      mpsForcees: batch.optimiseur_params?.mpsForcees ?? [],
+      restrictions: batch.optimiseur_params?.restrictions ?? [],
     }))
     navigate('/optimiseur')
   }
@@ -141,7 +115,7 @@ export default function BatchEnCours() {
     const batch = modalSuppr
     if (!batch) return
     if (restaurer) {
-      await restaurerSacsBatch(batch)
+      await restaurerSacsConsommes(batch.lignes)
     }
     await supabase.from('batch_consommations').delete().eq('batch_id', batch.id)
     await supabase.from('batch_lignes').delete().eq('batch_id', batch.id)
@@ -150,7 +124,7 @@ export default function BatchEnCours() {
     fetchAll()
   }
   function batchPeutEtreRestaure(batch) {
-    return batch.lignes.some(l => Array.isArray(l.sacs_consommes) && l.sacs_consommes.length > 0)
+    return lignesRestaurables(batch.lignes)
   }
 
   // ── Clôture ────────────────────────────────────────────────────────────────
@@ -174,26 +148,72 @@ export default function BatchEnCours() {
   }
 
   // ── Supprimer une ligne ────────────────────────────────────────────────────
-  async function supprimerLigne(ligneId) {
-    if (!confirm('Supprimer cette ligne ? Le sac source ne sera PAS remis en stock (utilisez plutôt Repasser en optimiseur).')) return
-    await supabase.from('batch_lignes').delete().eq('id', ligneId)
+  async function supprimerLigne(ligne) {
+    const tracked = Array.isArray(ligne.sacs_consommes) && ligne.sacs_consommes.length > 0
+    const msg = tracked
+      ? 'Supprimer cette ligne ? Le(s) sac(s) prélevé(s) seront remis en stock.'
+      : 'Supprimer cette ligne ? Pas de tracking du sac source : le stock ne sera pas modifié.'
+    if (!confirm(msg)) return
+    if (tracked) await restaurerSacsConsommes([ligne])
+    const { error } = await supabase.from('batch_lignes').delete().eq('id', ligne.id)
+    if (error) alert(`Erreur lors de la suppression de la ligne.\n${error.message}`)
     fetchAll()
   }
 
-  // ── Ajouter MP ────────────────────────────────────────────────────────────
-  async function ajouterMp() {
-    const masse = ajoutSacs.reduce((s, v) => s + (parseFloat(v) || 0), 0)
-    if (!ajoutMpId || masse <= 0) return
-    await supabase.from('batch_lignes').insert({
+  // ── Ajouter des sacs du stock ─────────────────────────────────────────────
+  const sacsStockById = Object.fromEntries(sacsStock.map(s => [s.id, s]))
+  function labelSacStock(sac) {
+    const mp = mpsMap[sac.mp_id]
+    const ref = sac.reference || (sac.numero_lot_fournisseur ? `N°${sac.numero_lot_fournisseur}` : sac.id.slice(0, 8))
+    return `${ref} — ${mp?.nom ?? sac.mp_id} — ${Math.round(sac.masse_kg ?? 0)} kg${sac.fournisseur ? ' · ' + sac.fournisseur : ''}`
+  }
+  function majAjoutPrise(i, field, value) {
+    setAjoutPrises(prev => prev.map((p, idx) => {
+      if (idx !== i) return p
+      if (field === 'sacId') {
+        const sac = sacsStockById[value]
+        return { sacId: value, taken: sac ? String(Math.round(sac.masse_kg ?? 0)) : '' }
+      }
+      return { ...p, [field]: value }
+    }))
+  }
+  async function ajouterSacsAuBatch() {
+    const selection = ajoutPrises
+      .map(p => ({ sac: sacsStockById[p.sacId], taken: parseFloat(p.taken) || 0 }))
+      .filter(s => s.sac && s.taken > 0)
+    if (!modalAjout || selection.length === 0) return
+
+    const idsVus = new Set()
+    for (const { sac, taken } of selection) {
+      if (idsVus.has(sac.id)) {
+        alert(`Le sac "${labelSacStock(sac)}" apparaît deux fois. Fusionnez les lignes.`)
+        return
+      }
+      idsVus.add(sac.id)
+      if (taken > (sac.masse_kg ?? 0) + 0.5) {
+        alert(`Le sac "${labelSacStock(sac)}" ne contient que ${Math.round(sac.masse_kg)} kg — impossible d'en prélever ${Math.round(taken)} kg.`)
+        return
+      }
+    }
+
+    const lignes = selection.map(({ sac, taken }, i) => ({
+      ...lignePourSac(sac, taken, 99 + i),
       batch_id: modalAjout,
-      mp_id: ajoutMpId,
-      masse_totale_kg: masse,
-      sacs_kg: ajoutSacs.map(s => parseFloat(s) || 0).filter(s => s > 0),
-      ordre: 99,
-      sacs_consommes: [],
-    })
+    }))
+    const { error: lErr } = await supabase.from('batch_lignes').insert(lignes)
+    if (lErr) {
+      alert(`Erreur : impossible d'ajouter les sacs au batch (stock inchangé).\n${lErr.message}`)
+      return
+    }
+    for (const { sac, taken } of selection) {
+      const upd = sacUpdatePourPrise(sac, taken)
+      const { error: sErr } = await supabase.from('sacs')
+        .update({ masse_kg: upd.masse_kg, statut: upd.statut, updated_at: new Date().toISOString() })
+        .eq('id', sac.id)
+      if (sErr) alert(`Attention : la ligne a été ajoutée mais le stock du sac n'a pas pu être mis à jour.\n${sErr.message}`)
+    }
     setModalAjout(null)
-    setAjoutSacs([0])
+    setAjoutPrises([])
     fetchAll()
   }
 
@@ -250,7 +270,7 @@ export default function BatchEnCours() {
     const coutReste = masseBatch > 0 ? Math.round(coutBatch / masseBatch * 1000) : 0
 
     const mpId = `MP_${batch.id}`
-    await supabase.from('matieres_premieres').upsert({
+    const { error: mpErr } = await supabase.from('matieres_premieres').upsert({
       id: mpId,
       nom: `Reste batch ${batch.id}`,
       type_appro: 'Interne',
@@ -268,13 +288,21 @@ export default function BatchEnCours() {
       pct_sable:             Math.round(comp.ecoLithe    * 10) / 10,
       pct_charge_minerale:   Math.round(comp.chargeMin   * 10) / 10,
     }, { onConflict: 'id' })
+    if (mpErr) {
+      alert(`Erreur : la MP "Reste batch" n'a pas pu être créée.\n${mpErr.message}`)
+      return
+    }
 
-    await supabase.from('sacs').insert({
+    const { error: sacErr } = await supabase.from('sacs').insert({
       mp_id: mpId,
       masse_kg: kg,
       reference: `Reste-${batch.id}`,
       statut: 'disponible',
     })
+    if (sacErr) {
+      alert(`Erreur : le sac de reste n'a pas pu être ajouté au stock.\n${sacErr.message}`)
+      return
+    }
 
     // Met à jour le batch pour mémoriser la quantité déclarée en reste
     const newResteDeclare = (batch.reste_declare_kg ?? 0) + kg
@@ -499,7 +527,7 @@ ${compHtml ? `<h2 style="font-size:14px;margin-bottom:8px;">Composition résulta
                     <button onClick={() => repasserEnOptimiseur(batch)} className="text-xs px-3 py-1.5 border border-amber-200 text-amber-700 rounded-lg hover:bg-amber-50">
                       ↩ Optimiseur
                     </button>
-                    <button onClick={() => { setModalAjout(batch.id); setAjoutMpId(mpsListe[0]?.id ?? '') }} className="text-xs px-3 py-1.5 border border-gray-200 rounded-lg hover:bg-gray-50">
+                    <button onClick={() => { setModalAjout(batch.id); setAjoutPrises([{ sacId: '', taken: '' }]) }} className="text-xs px-3 py-1.5 border border-gray-200 rounded-lg hover:bg-gray-50">
                       + Ajouter MP
                     </button>
                     <button onClick={() => ouvrirConso(batch)} className="text-xs px-3 py-1.5 border border-indigo-200 text-indigo-700 rounded-lg hover:bg-indigo-50">
@@ -595,7 +623,7 @@ ${compHtml ? `<h2 style="font-size:14px;margin-bottom:8px;">Composition résulta
                           </div>
                         </td>
                         <td className="px-4 py-3 text-right">
-                          <button onClick={() => supprimerLigne(l.id)} className="text-xs text-red-400 hover:text-red-600">Supprimer</button>
+                          <button onClick={() => supprimerLigne(l)} className="text-xs text-red-400 hover:text-red-600">Supprimer</button>
                         </td>
                       </tr>
                     ))}
@@ -623,37 +651,58 @@ ${compHtml ? `<h2 style="font-size:14px;margin-bottom:8px;">Composition résulta
         </div>
       )}
 
-      {/* Modal ajout MP */}
+      {/* Modal ajout de sacs du stock */}
       <Modal
         open={!!modalAjout}
         onClose={() => setModalAjout(null)}
-        title="Ajouter une matière"
+        title="Ajouter des sacs du stock au batch"
         footer={
           <>
             <button onClick={() => setModalAjout(null)} className="px-4 py-2 text-sm border border-gray-200 rounded-lg hover:bg-gray-50">Annuler</button>
-            <button onClick={ajouterMp} className="px-4 py-2 text-sm bg-gray-900 text-white rounded-lg hover:bg-gray-700">Ajouter</button>
+            <button onClick={ajouterSacsAuBatch} className="px-4 py-2 text-sm bg-gray-900 text-white rounded-lg hover:bg-gray-700">Ajouter et décompter le stock</button>
           </>
         }
       >
         <div className="space-y-3">
-          <div>
-            <label className="block text-xs text-gray-500 mb-1">Matière première</label>
-            <select value={ajoutMpId} onChange={e => setAjoutMpId(e.target.value)} className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2">
-              {mpsListe.map(m => <option key={m.id} value={m.id}>{m.id} — {m.nom}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="block text-xs text-gray-500 mb-2">Sacs (kg)</label>
-            {ajoutSacs.map((s, i) => (
-              <div key={i} className="flex gap-2 items-center mb-2">
-                <input type="number" min="0" value={s || ''} onChange={e => setAjoutSacs(prev => prev.map((v, idx) => idx === i ? parseFloat(e.target.value) || 0 : v))}
-                  placeholder="kg" className="w-32 text-sm border border-gray-200 rounded-lg px-3 py-2" />
-                <span className="text-xs text-gray-400">kg</span>
-                {ajoutSacs.length > 1 && <button onClick={() => setAjoutSacs(prev => prev.filter((_, idx) => idx !== i))} className="text-red-400">×</button>}
+          <p className="text-xs text-gray-500">
+            Les sacs sélectionnés sont prélevés du stock et tracés : ils seront restitués
+            si la ligne ou le batch est annulé.
+          </p>
+          {sacsStock.length === 0 && (
+            <p className="text-xs text-amber-600">Aucun sac disponible en stock.</p>
+          )}
+          {ajoutPrises.map((p, i) => {
+            const sac = sacsStockById[p.sacId]
+            const dejaPris = new Set(ajoutPrises.map(x => x.sacId).filter(Boolean))
+            return (
+              <div key={i} className="flex gap-2 items-center flex-wrap">
+                <select
+                  value={p.sacId}
+                  onChange={e => majAjoutPrise(i, 'sacId', e.target.value)}
+                  className="flex-1 min-w-[220px] text-sm border border-gray-200 rounded-lg px-3 py-2"
+                >
+                  <option value="">Sélectionner un sac…</option>
+                  {sacsStock
+                    .filter(s => s.id === p.sacId || !dejaPris.has(s.id))
+                    .map(s => <option key={s.id} value={s.id}>{labelSacStock(s)}</option>)}
+                </select>
+                <input
+                  type="number" min="1"
+                  value={p.taken}
+                  onChange={e => majAjoutPrise(i, 'taken', e.target.value)}
+                  placeholder="kg"
+                  className="w-24 text-sm border border-gray-200 rounded-lg px-3 py-2"
+                />
+                <span className="text-xs text-gray-400">kg{sac ? ` / ${Math.round(sac.masse_kg ?? 0)}` : ''}</span>
+                {ajoutPrises.length > 1 && (
+                  <button onClick={() => setAjoutPrises(prev => prev.filter((_, idx) => idx !== i))} className="text-red-400">×</button>
+                )}
               </div>
-            ))}
-            <button onClick={() => setAjoutSacs(prev => [...prev, 0])} className="text-xs text-blue-600 border border-blue-200 rounded px-2 py-1">+ sac</button>
-          </div>
+            )
+          })}
+          <button onClick={() => setAjoutPrises(prev => [...prev, { sacId: '', taken: '' }])} className="text-xs text-blue-600 border border-blue-200 rounded px-2 py-1">
+            + autre sac
+          </button>
         </div>
       </Modal>
 

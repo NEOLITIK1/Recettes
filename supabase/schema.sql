@@ -1,4 +1,4 @@
--- NEOLITIK — Schéma Supabase complet (consolidé : inclut migrations v6, v7 et v8)
+-- NEOLITIK — Schéma Supabase complet (consolidé : inclut migrations v6 à v9)
 -- Installation neuve : coller ce seul fichier dans Supabase > SQL Editor > New query > Run
 -- Base existante : exécuter uniquement les migration-vX.sql manquants
 
@@ -75,6 +75,7 @@ create table if not exists batches (
   operateur_creation text,
   operateur_cloture text,
   cloture_at timestamptz,
+  optimiseur_params jsonb,
   created_at timestamptz default now()
 );
 
@@ -127,3 +128,51 @@ begin
     end if;
   end loop;
 end $$;
+
+-- Création de batch ATOMIQUE (batch + lignes + stock dans une transaction)
+-- Voir migration-v9.sql pour la documentation des paramètres
+create or replace function valider_batch(p_batch jsonb, p_lignes jsonb, p_sacs jsonb)
+returns void
+language plpgsql
+as $$
+declare
+  l jsonb;
+  s jsonb;
+begin
+  insert into batches (id, nom, recette_id, date_creation, statut,
+                       cout_total_eur, cout_par_tonne_eur, optimiseur_params)
+  values (
+    p_batch->>'id',
+    p_batch->>'nom',
+    p_batch->>'recette_id',
+    coalesce((p_batch->>'date_creation')::date, current_date),
+    coalesce(p_batch->>'statut', 'en_cours'),
+    (p_batch->>'cout_total_eur')::numeric,
+    (p_batch->>'cout_par_tonne_eur')::numeric,
+    case when p_batch ? 'optimiseur_params' then p_batch->'optimiseur_params' else null end
+  );
+
+  for l in select * from jsonb_array_elements(p_lignes) loop
+    insert into batch_lignes (batch_id, mp_id, masse_totale_kg, sacs_kg, ordre,
+                              sacs_consommes, composition_snapshot)
+    values (
+      p_batch->>'id',
+      l->>'mp_id',
+      (l->>'masse_totale_kg')::numeric,
+      coalesce((select array_agg(value::numeric) from jsonb_array_elements_text(l->'sacs_kg')), '{}'),
+      coalesce((l->>'ordre')::int, 0),
+      coalesce(l->'sacs_consommes', '[]'::jsonb),
+      case when (l ? 'composition_snapshot') and (l->'composition_snapshot') <> 'null'::jsonb
+           then l->'composition_snapshot' else null end
+    );
+  end loop;
+
+  for s in select * from jsonb_array_elements(p_sacs) loop
+    update sacs set
+      masse_kg = (s->>'masse_kg')::numeric,
+      statut = s->>'statut',
+      updated_at = now()
+    where id = (s->>'id')::uuid;
+  end loop;
+end;
+$$;

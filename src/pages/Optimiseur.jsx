@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase.js'
 import { calcComposition, calcCout, fmt1, effectiveMp } from '../lib/calculs.js'
+import { creerBatchAvecStock, lignePourSac, sacUpdatePourPrise } from '../lib/batchOps.js'
 import EcartBadge from '../components/EcartBadge.jsx'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -323,10 +324,13 @@ export default function Optimiseur() {
     const prefill = localStorage.getItem('optimiseur_prefill')
     if (prefill) {
       try {
-        const { recetteId, masse, nom } = JSON.parse(prefill)
+        const { recetteId, masse, nom, mpsForcees: pf, restrictions: pr } = JSON.parse(prefill)
         if (recetteId) setRcId(recetteId)
         if (masse) setMasseCible(masse)
         if (nom) setNomBatch(nom)
+        // Retrouver les MP imposées et restrictions du batch d'origine
+        if (Array.isArray(pf) && pf.length) setMpsForcees(pf)
+        if (Array.isArray(pr) && pr.length) setRestrictions(pr)
         localStorage.removeItem('optimiseur_prefill')
         setPrefillPending(true)
       } catch(e) {}
@@ -427,7 +431,10 @@ export default function Optimiseur() {
     const masseTotale = selection.reduce((s, { taken }) => s + taken, 0)
     const coutParTonne = masseTotale > 0 ? coutTotal / masseTotale * 1000 : 0
 
-    const { error: bErr } = await supabase.from('batches').insert({
+    // Batch + lignes + stock en une transaction (lib partagée, RPC v9 avec fallback).
+    // Chaque ligne fige sa composition effective et trace son sac source pour
+    // permettre une restauration fidèle (annulation, repasser en optimiseur…).
+    const batch = {
       id: batchId,
       nom,
       recette_id: rcId,
@@ -435,61 +442,33 @@ export default function Optimiseur() {
       statut: 'en_cours',
       cout_total_eur: Math.round(coutTotal),
       cout_par_tonne_eur: Math.round(coutParTonne),
-    })
-    if (bErr) {
-      setSaving(false)
-      alert(`Erreur : le batch n'a pas pu être créé.\n${bErr.message}`)
-      return
     }
-
-    // Lignes batch : chaque sac sélectionné = une ligne avec snapshot pour restauration
-    // Si le sac avait une composition_override, on la fige dans composition_snapshot
-    // pour que les calculs futurs (affichage batch, historique) restent justes même si
-    // l'override du sac est modifié plus tard.
-    const toLigne = (s, ordre) => ({
-      batch_id: batchId,
-      mp_id: s.sac.mp_id,
-      masse_totale_kg: s.taken,
-      sacs_kg: [s.taken],
-      ordre,
-      // Tous les sacs sont maintenant de vrais sacs (forcés ou non) → snapshot complet
-      sacs_consommes: [{
-          sac_id: s.sac.id,
-          masse_prise: s.taken,
-          masse_avant_kg: s.masse_avant_kg ?? (s.sac.masse_kg ?? 0),
-          statut_avant: s.statut_avant ?? 'disponible',
-          // Snapshot identifiants pour l'impression (résiste à suppression future du sac)
-          reference: s.sac.reference ?? null,
-          fournisseur: s.sac.fournisseur ?? null,
-          numero_lot_fournisseur: s.sac.numero_lot_fournisseur ?? null,
-        }],
-      composition_snapshot: s.sac.composition_override ?? null,
-    })
-    const lignes = selection.map((s, i) => toLigne(s, i))
-    const { error: lErr } = await supabase.from('batch_lignes').insert(lignes)
-    if (lErr) {
-      // Annuler l'en-tête batch pour ne pas laisser un batch vide orphelin
-      await supabase.from('batches').delete().eq('id', batchId)
-      setSaving(false)
-      alert(`Erreur : les lignes du batch n'ont pas pu être enregistrées (stock inchangé).\n${lErr.message}`)
-      return
+    // Mémoriser MP imposées / restrictions pour un futur "Repasser en optimiseur"
+    if (mpsForcees.length > 0 || restrictions.length > 0) {
+      batch.optimiseur_params = { mpsForcees, restrictions }
     }
+    const lignes = selection.map((s, i) => {
+      const ligne = lignePourSac(s.sac, s.taken, i)
+      // L'algo a annoté l'état initial du sac (avant prélèvements multi-passes)
+      ligne.sacs_consommes[0].masse_avant_kg = s.masse_avant_kg ?? (s.sac.masse_kg ?? 0)
+      ligne.sacs_consommes[0].statut_avant = s.statut_avant ?? 'disponible'
+      return ligne
+    })
+    // MAJ stock : cumul des prélèvements par sac (un même sac peut apparaître
+    // en MP forcée puis en phase d'optimisation)
+    const priseParSac = new Map()
+    for (const { sac, taken } of selection) {
+      const cur = priseParSac.get(sac.id) ?? { sac, taken: 0 }
+      cur.taken += taken
+      priseParSac.set(sac.id, cur)
+    }
+    const sacUpdates = [...priseParSac.values()].map(({ sac, taken }) => sacUpdatePourPrise(sac, taken))
 
-    // MAJ stock (tous les sacs, y compris ceux des MP forcées, sont de vrais sacs)
-    for (const { sac, taken, partial } of selection) {
-      if (partial) {
-        await supabase.from('sacs').update({
-          masse_kg: Math.max(0, Math.round((sac.masse_kg ?? 0) - taken)),
-          statut: 'partiel',
-          updated_at: new Date().toISOString(),
-        }).eq('id', sac.id)
-      } else {
-        await supabase.from('sacs').update({
-          masse_kg: 0,
-          statut: 'consomme',
-          updated_at: new Date().toISOString(),
-        }).eq('id', sac.id)
-      }
+    const err = await creerBatchAvecStock(batch, lignes, sacUpdates)
+    if (err) {
+      setSaving(false)
+      alert(`Erreur : le batch n'a pas pu être créé (stock inchangé).\n${err.message}`)
+      return
     }
 
     setSaving(false)

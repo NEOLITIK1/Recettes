@@ -70,8 +70,6 @@ export default function Dashboard() {
   const startLastMonth = new Date(startMonth); startLastMonth.setMonth(startLastMonth.getMonth() - 1)
   const endLastMonth = startMonth
 
-  // Tonnage : on prend les batchs clôturés (production effective) + masse consommée des en_cours
-  // On simplifie : tonnage = masse totale des batchs créés sur la période (clôturés ou en cours)
   const batchesAvecLignes = batches.map(b => ({
     ...b,
     lignes: lignesParBatch[b.id] ?? [],
@@ -86,15 +84,27 @@ export default function Dashboard() {
 
   const dToday = new Date(today); dToday.setHours(0, 0, 0, 0)
   const dTomorrow = new Date(dToday); dTomorrow.setDate(dTomorrow.getDate() + 1)
-  const batchsJour = batchsParPeriode(dToday, dTomorrow)
-  const batchsSemaine = batchsParPeriode(startWeek)
   const batchsMois = batchsParPeriode(startMonth)
   const batchsMoisDernier = batchsParPeriode(startLastMonth, endLastMonth)
 
-  const tonnageJour = batchsJour.reduce((s, b) => s + b.masseTotale, 0)
-  const tonnageSemaine = batchsSemaine.reduce((s, b) => s + b.masseTotale, 0)
-  const tonnageMois = batchsMois.reduce((s, b) => s + b.masseTotale, 0)
-  const tonnageMoisDernier = batchsMoisDernier.reduce((s, b) => s + b.masseTotale, 0)
+  // Production réelle = consommations déclarées jour par jour (batch_consommations),
+  // pas la date de création des batchs (un batch créé lundi peut être consommé sur 2 semaines)
+  const consoParPeriode = (dateMin, dateMax) =>
+    conso.filter(c => {
+      if (!c.date_consommation) return false
+      const d = new Date(c.date_consommation)
+      return d >= dateMin && (!dateMax || d < dateMax)
+    })
+  const consoJour = consoParPeriode(dToday, dTomorrow)
+  const consoSemaine = consoParPeriode(startWeek)
+  const consoMoisListe = consoParPeriode(startMonth)
+  const consoMoisDernierListe = consoParPeriode(startLastMonth, endLastMonth)
+  const sumConso = (cs) => cs.reduce((s, c) => s + (c.masse_kg ?? 0), 0)
+
+  const tonnageJour = sumConso(consoJour)
+  const tonnageSemaine = sumConso(consoSemaine)
+  const tonnageMois = sumConso(consoMoisListe)
+  const tonnageMoisDernier = sumConso(consoMoisDernierListe)
   const evolutionTonnage = tonnageMoisDernier > 0
     ? Math.round((tonnageMois - tonnageMoisDernier) / tonnageMoisDernier * 100)
     : null
@@ -162,14 +172,14 @@ export default function Dashboard() {
         <p className="text-sm text-gray-500 mt-0.5">{today.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</p>
       </div>
 
-      {/* KPIs production */}
+      {/* KPIs production (consommations déclarées en production) */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-        <Kpi label="Aujourd'hui" value={fmtKg(tonnageJour)} sub={`${batchsJour.length} batch${batchsJour.length !== 1 ? 's' : ''}`} />
-        <Kpi label="Cette semaine" value={fmtKg(tonnageSemaine)} sub={`${batchsSemaine.length} batch${batchsSemaine.length !== 1 ? 's' : ''}`} />
+        <Kpi label="Produit aujourd'hui" value={fmtKg(tonnageJour)} sub={`${consoJour.length} déclaration${consoJour.length !== 1 ? 's' : ''}`} />
+        <Kpi label="Produit cette semaine" value={fmtKg(tonnageSemaine)} sub={`${consoSemaine.length} déclaration${consoSemaine.length !== 1 ? 's' : ''}`} />
         <Kpi
-          label="Ce mois"
+          label="Produit ce mois"
           value={fmtKg(tonnageMois)}
-          sub={evolutionTonnage !== null ? `${evolutionTonnage > 0 ? '+' : ''}${evolutionTonnage}% vs M-1` : `${batchsMois.length} batchs`}
+          sub={evolutionTonnage !== null ? `${evolutionTonnage > 0 ? '+' : ''}${evolutionTonnage}% vs M-1` : `${consoMoisListe.length} déclaration${consoMoisListe.length !== 1 ? 's' : ''}`}
           subColor={evolutionTonnage > 0 ? 'text-emerald-600' : evolutionTonnage < 0 ? 'text-red-600' : 'text-gray-500'}
         />
         <Kpi
