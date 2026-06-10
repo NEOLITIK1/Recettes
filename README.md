@@ -28,6 +28,9 @@ npm install
 2. Copier l'URL et la clé anon (Settings → API)
 3. Dans SQL Editor → New query, coller le contenu de `supabase/schema.sql` et cliquer Run
 
+> **Installation neuve** : `schema.sql` est consolidé et suffit à lui seul.
+> **Base existante** : exécuter uniquement les `supabase/migration-vX.sql` pas encore appliqués (ils sont idempotents — sans risque si relancés).
+
 ### 3. Configurer les variables d'environnement
 
 ```bash
@@ -88,21 +91,28 @@ L'appli est en ligne en 2 minutes.
 ```
 src/
 ├── lib/
-│   ├── supabase.js      # Client Supabase
-│   └── calculs.js       # Calcul composition + coût batch
+│   ├── supabase.js       # Client Supabase
+│   └── calculs.js        # Calcul composition + coût batch
 ├── data/
-│   └── seed.js          # Données initiales (42 MP, 3 recettes, 20 batchs)
+│   └── seed.js           # Données initiales (42 MP, 3 recettes, 20 batchs)
 ├── components/
 │   ├── Layout.jsx        # Sidebar + navigation
 │   ├── Modal.jsx         # Composant modal réutilisable
-│   ├── CompositionBar.jsx # Barre visuelle de composition
+│   ├── CompositionBar.jsx# Barre visuelle de composition
+│   ├── TooltipMp.jsx     # Tooltip composition d'une MP
 │   └── EcartBadge.jsx    # Badge écart vert/orange/rouge
 └── pages/
-    ├── MatieresPremières.jsx
-    ├── Recettes.jsx
-    ├── Stock.jsx
-    ├── Optimiseur.jsx
-    └── Historique.jsx
+    ├── Dashboard.jsx     # KPIs production, alertes stock
+    ├── Matieres.jsx      # Catalogue matières premières
+    ├── Recettes.jsx      # Recettes cibles + versionnage
+    ├── Stock.jsx         # Sacs en stock + composition par sac
+    ├── Optimiseur.jsx    # Composition automatique de batch
+    ├── ManuelBatch.jsx   # Composition manuelle
+    ├── BatchEnCours.jsx  # Suivi consommation, clôture, impression
+    └── Historique.jsx    # Batchs clôturés + export CSV
+supabase/
+├── schema.sql            # Schéma complet (installation neuve)
+└── migration-v6/7/8.sql  # Migrations incrémentales (base existante)
 ```
 
 ---

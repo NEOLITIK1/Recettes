@@ -66,16 +66,32 @@ export default function MatieresPremières() {
       alert('Veuillez sélectionner au moins une recette autorisée.')
       return
     }
+    // Cohérence : matière (plastiques + non plastique) doit sommer à ~100% du sac
+    const totalMatiere = (form.pct_pp ?? 0) + (form.pct_pe ?? 0) + (form.pct_alu ?? 0)
+      + (form.pct_autres ?? 0) + (form.pct_autres_plastiques ?? 0)
+      + (form.pct_sable ?? 0) + (form.pct_charge_minerale ?? 0)
+    if (Math.abs(totalMatiere - 100) > 0.5) {
+      if (!confirm(`La somme PP+PE+Alu+Autres+Sable+Charge = ${totalMatiere.toFixed(1)}% (devrait être 100%). Les calculs de l'optimiseur seront faussés. Continuer quand même ?`)) return
+    }
     const payload = { ...form }
     const { error } = editId
       ? await supabase.from('matieres_premieres').update(payload).eq('id', editId)
       : await supabase.from('matieres_premieres').insert(payload)
-    if (!error) { setModalOpen(false); fetchMps() }
+    if (error) {
+      alert(`Erreur : la matière n'a pas pu être enregistrée.\n${error.message}`)
+      return
+    }
+    setModalOpen(false)
+    fetchMps()
   }
 
   async function handleDelete(id) {
     if (!confirm('Supprimer cette matière ?')) return
-    await supabase.from('matieres_premieres').delete().eq('id', id)
+    const { error } = await supabase.from('matieres_premieres').delete().eq('id', id)
+    if (error) {
+      alert(`Suppression impossible : cette matière est référencée par des sacs ou des batchs.\n${error.message}`)
+      return
+    }
     fetchMps()
   }
 

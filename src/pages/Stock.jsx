@@ -109,10 +109,12 @@ export default function Stock() {
       date_reception: form.date_reception || null,
       composition_override: showCompoOverride ? form.composition_override : null,
     }
-    if (editId) {
-      await supabase.from('sacs').update(payload).eq('id', editId)
-    } else {
-      await supabase.from('sacs').insert(payload)
+    const { error } = editId
+      ? await supabase.from('sacs').update(payload).eq('id', editId)
+      : await supabase.from('sacs').insert(payload)
+    if (error) {
+      alert(`Erreur : le sac n'a pas pu être enregistré.\n${error.message}`)
+      return
     }
     setModalOpen(false)
     fetchAll()

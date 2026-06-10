@@ -1,5 +1,5 @@
-// Données initiales à importer via le script seed
-// Exécuter : npm run seed (après avoir configuré .env)
+// Données initiales — importées depuis l'interface :
+// Matières premières / Recettes / Historique → bouton "Importer"
 
 export const MATIERES = [
   { id: 'MP000S', nom: 'EcoLithe broyé (S)', type_appro: 'Interne', description: 'Rebuts dalles broyées', cout_par_tonne: 0, pct_pp: 27, pct_pe: 11, pct_alu: 1, pct_autres: 1, pct_blanc: 0, pct_transparent: 0, pct_noir: 0, pct_autres_couleurs: 0, pct_sable: 60 },

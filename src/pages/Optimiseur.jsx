@@ -9,6 +9,9 @@ import EcartBadge from '../components/EcartBadge.jsx'
 function optimiser(sacsDispo, mpsMap, recette, masseCible, mpsForcees = [], seed = 0, recetteId = '') {
   if (!recette) return []
 
+  // Une MP autorisée pour une recette l'est aussi pour ses versions (famille = recette parente)
+  const recetteIdsOk = new Set([recetteId, recette.parent_recette_id].filter(Boolean))
+
   // Générateur pseudo-aléatoire déterministe basé sur le seed
   function pseudoRand(i) {
     const x = Math.sin(seed * 9301 + i * 49297 + 233720) * 10000
@@ -209,7 +212,7 @@ function optimiser(sacsDispo, mpsMap, recette, masseCible, mpsForcees = [], seed
     if ((recette.pct_noir_cible ?? 0) < 5 && (mp.pct_noir ?? 0) > 10) return false
     // Filtre recettes autorisées (sur la MP de référence, pas l'override)
     const autorisees = baseMp.recettes_autorisees ?? []
-    if (autorisees.length > 0 && !autorisees.includes(recetteId)) return false
+    if (autorisees.length > 0 && !autorisees.some(a => recetteIdsOk.has(a))) return false
     return true
   })
 
@@ -381,11 +384,13 @@ export default function Optimiseur() {
     if (!recette) return
     const seed = Math.floor(Math.random() * 100000)
 
+    // Autorisation par famille : une MP autorisée pour RC001 l'est aussi pour RC001_v2
+    const recetteIdsOk = new Set([rcId, recette.parent_recette_id].filter(Boolean))
     let sacsFiltrés = sacs.filter(sac => {
       const mp = mpsMap[sac.mp_id]
       if (!mp) return false
       const autorisees = mp.recettes_autorisees ?? []
-      if (autorisees.length > 0) return autorisees.includes(rcId)
+      if (autorisees.length > 0) return autorisees.some(a => recetteIdsOk.has(a))
       return true
     })
 
@@ -413,7 +418,8 @@ export default function Optimiseur() {
     setSaving(true)
 
     const recette = recettes.find(r => r.id === rcId)
-    const batchId = 'B' + String(Date.now()).slice(-6)
+    // Base 36 du timestamp : unique à la milliseconde, pas de cycle de réutilisation
+    const batchId = 'B' + Date.now().toString(36).toUpperCase()
     const nom = nomBatch.trim() || `Batch ${batchId} — ${recette?.nom ?? ''}`
 
     const lignesEnrichiesCout = selection.map(({ mp, taken }) => ({ mp, masse_totale_kg: taken }))
@@ -430,7 +436,11 @@ export default function Optimiseur() {
       cout_total_eur: Math.round(coutTotal),
       cout_par_tonne_eur: Math.round(coutParTonne),
     })
-    if (bErr) { setSaving(false); return }
+    if (bErr) {
+      setSaving(false)
+      alert(`Erreur : le batch n'a pas pu être créé.\n${bErr.message}`)
+      return
+    }
 
     // Lignes batch : chaque sac sélectionné = une ligne avec snapshot pour restauration
     // Si le sac avait une composition_override, on la fige dans composition_snapshot
@@ -456,7 +466,14 @@ export default function Optimiseur() {
       composition_snapshot: s.sac.composition_override ?? null,
     })
     const lignes = selection.map((s, i) => toLigne(s, i))
-    await supabase.from('batch_lignes').insert(lignes)
+    const { error: lErr } = await supabase.from('batch_lignes').insert(lignes)
+    if (lErr) {
+      // Annuler l'en-tête batch pour ne pas laisser un batch vide orphelin
+      await supabase.from('batches').delete().eq('id', batchId)
+      setSaving(false)
+      alert(`Erreur : les lignes du batch n'ont pas pu être enregistrées (stock inchangé).\n${lErr.message}`)
+      return
+    }
 
     // MAJ stock (tous les sacs, y compris ceux des MP forcées, sont de vrais sacs)
     for (const { sac, taken, partial } of selection) {

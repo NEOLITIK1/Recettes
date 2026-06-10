@@ -82,9 +82,11 @@ export default function BatchEnCours() {
     const total = masseTotaleBatch(batch)
     const consommee = masseConsommeeBatch(batch)
     const reste = batch.reste_declare_kg ?? 0
-    const restanteMelange = Math.max(0, total - consommee - reste)
-    const ecartPct = total > 0 ? Math.abs(restanteMelange) / total * 100 : 0
-    return { total, consommee, reste, restanteMelange, ecartPct }
+    // Écart signé : positif = masse non déclarée, négatif = sur-déclaration (saisie erronée)
+    const nonComptabilise = total - consommee - reste
+    const restanteMelange = Math.max(0, nonComptabilise)
+    const ecartPct = total > 0 ? Math.abs(nonComptabilise) / total * 100 : 0
+    return { total, consommee, reste, restanteMelange, nonComptabilise, ecartPct }
   }
 
   // ── Restauration des sacs depuis sacs_consommes ────────────────────────────
@@ -153,10 +155,13 @@ export default function BatchEnCours() {
 
   // ── Clôture ────────────────────────────────────────────────────────────────
   async function cloturerBatch(batch) {
-    const { total, consommee, reste, ecartPct } = bilanBatch(batch)
-    const masseNonDeclaree = total - consommee - reste
+    const { ecartPct, nonComptabilise } = bilanBatch(batch)
+    const masseNonDeclaree = nonComptabilise
     if (ecartPct > 5) {
-      alert(`Impossible de clôturer : ${Math.round(masseNonDeclaree)} kg de mélange ne sont ni consommés ni déclarés en reste (écart ${ecartPct.toFixed(1)}% > 5%).\n\nDéclarez une consommation ou un reste avant de clôturer.`)
+      const detail = masseNonDeclaree >= 0
+        ? `${Math.round(masseNonDeclaree)} kg de mélange ne sont ni consommés ni déclarés en reste`
+        : `${Math.round(-masseNonDeclaree)} kg déclarés EN TROP par rapport à la masse du batch (vérifiez les consommations saisies)`
+      alert(`Impossible de clôturer : ${detail} (écart ${ecartPct.toFixed(1)}% > 5%).\n\nCorrigez les déclarations avant de clôturer.`)
       return
     }
     let msg = `Clôturer le batch "${batch.nom}" ? Il passera dans l'historique.`
@@ -233,6 +238,10 @@ export default function BatchEnCours() {
     const kg = parseFloat(resteKg)
     if (!kg || kg <= 0 || !modalReste) return
     const batch = modalReste
+    const { restanteMelange } = bilanBatch(batch)
+    if (kg > restanteMelange + 0.5) {
+      if (!confirm(`Vous déclarez ${Math.round(kg)} kg de reste mais il ne reste que ${Math.round(restanteMelange)} kg non comptabilisés dans ce batch. Continuer quand même ?`)) return
+    }
     const lignesEnrichies = batch.lignes.map(l => ({ mp: effectiveMp(mpsMap[l.mp_id], l.composition_snapshot), masse_totale_kg: l.masse_totale_kg }))
     const comp = calcComposition(lignesEnrichies)
     if (!comp) return

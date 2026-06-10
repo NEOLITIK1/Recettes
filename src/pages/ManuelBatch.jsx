@@ -89,7 +89,8 @@ export default function ManuelBatch() {
     if (!lignes.length || !rcId) return
     setSaving(true)
 
-    const batchId = 'B' + String(Date.now()).slice(-6)
+    // Base 36 du timestamp : unique à la milliseconde, pas de cycle de réutilisation
+    const batchId = 'B' + Date.now().toString(36).toUpperCase()
     const nom = nomBatch.trim() || `Batch ${batchId} — ${recette?.nom ?? ''} (manuel)`
 
     // Calculer et figer le coût au moment de la création
@@ -109,7 +110,11 @@ export default function ManuelBatch() {
       cout_total_eur: Math.round(coutTotal),
       cout_par_tonne_eur: Math.round(coutParTonne),
     })
-    if (error) { setSaving(false); return }
+    if (error) {
+      setSaving(false)
+      alert(`Erreur : le batch n'a pas pu être créé.\n${error.message}`)
+      return
+    }
 
     const lignesPayload = lignes
       .filter(l => l.sacs.reduce((s, v) => s + v, 0) > 0)
@@ -122,7 +127,13 @@ export default function ManuelBatch() {
         sacs_consommes: [], // mode manuel : pas de lien sac → restauration auto impossible
       }))
 
-    await supabase.from('batch_lignes').insert(lignesPayload)
+    const { error: lErr } = await supabase.from('batch_lignes').insert(lignesPayload)
+    if (lErr) {
+      await supabase.from('batches').delete().eq('id', batchId)
+      setSaving(false)
+      alert(`Erreur : les lignes du batch n'ont pas pu être enregistrées.\n${lErr.message}`)
+      return
+    }
 
     setSaving(false)
     setSaved(true)

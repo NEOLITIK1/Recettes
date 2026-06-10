@@ -98,7 +98,12 @@ export default function Recettes() {
     const { error } = editId
       ? await supabase.from('recettes_cibles').update(payload).eq('id', editId)
       : await supabase.from('recettes_cibles').insert(payload)
-    if (!error) { setModalOpen(false); fetch() }
+    if (error) {
+      alert(`Erreur : la recette n'a pas pu être enregistrée.\n${error.message}`)
+      return
+    }
+    setModalOpen(false)
+    fetch()
   }
 
   const fNum = (field) => ({
