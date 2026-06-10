@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase.js'
-import { calcComposition, calcCout, fmt1, effectiveMp } from '../lib/calculs.js'
+import { calcComposition, calcCout, fmt1, effectiveMp, COMP_PARAMS_FULL } from '../lib/calculs.js'
 import { creerBatchAvecStock, lignePourSac, sacUpdatePourPrise } from '../lib/batchOps.js'
 import EcartBadge from '../components/EcartBadge.jsx'
 
@@ -489,16 +489,7 @@ export default function Optimiseur() {
   const masseSelection = selection ? selection.reduce((s, { taken }) => s + taken, 0) : 0
   const coutParTonneEstime = masseSelection > 0 ? Math.round(coutEstime / masseSelection * 1000) : 0
 
-  const COMP_PARAMS = [
-    { key: 'pp',        label: '%PP',             cibleKey: 'pct_pp_cible' },
-    { key: 'pe',        label: '%PE',             cibleKey: 'pct_pe_cible' },
-    { key: 'alu',       label: '%Alu',            cibleKey: 'pct_alu_cible' },
-    { key: 'blanc',     label: '%Blanc',          cibleKey: 'pct_blanc_cible' },
-    { key: 'transp',    label: '%Transp.',        cibleKey: 'pct_transparent_cible' },
-    { key: 'noir',      label: '%Noir',           cibleKey: 'pct_noir_cible' },
-    { key: 'ecoLithe',  label: '%EcoLithe',       cibleKey: 'pct_ecolithe_cible' },
-    { key: 'chargeMin', label: '%Charge min.',    cibleKey: 'pct_charge_minerale_cible' },
-  ]
+  const COMP_PARAMS = COMP_PARAMS_FULL
 
   return (
     <div>
@@ -735,7 +726,7 @@ export default function Optimiseur() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
-                  {COMP_PARAMS.filter(p => (recette[p.cibleKey] ?? 0) > 0 || comp[p.key] > 0).map(p => (
+                  {COMP_PARAMS.map(p => (
                     <tr key={p.key} className="hover:bg-gray-50">
                       <td className="px-4 py-3 font-medium text-gray-700">{p.label}</td>
                       <td className="px-4 py-3 text-right tabular-nums">{fmt1(comp[p.key])}%</td>

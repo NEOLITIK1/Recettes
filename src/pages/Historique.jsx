@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase.js'
 import { BATCHES } from '../data/seed.js'
-import { calcComposition, calcCout, fmt1, effectiveMp } from '../lib/calculs.js'
+import { calcComposition, calcCout, fmt1, effectiveMp, COMP_PARAMS_FULL } from '../lib/calculs.js'
 import { restaurerSacsConsommes } from '../lib/batchOps.js'
 import EcartBadge from '../components/EcartBadge.jsx'
 import Modal from '../components/Modal.jsx'
@@ -165,12 +165,7 @@ export default function Historique() {
     URL.revokeObjectURL(url)
   }
 
-  const COMP_PARAMS = [
-    { key: 'pp',       label: '%PP',       cibleKey: 'pct_pp_cible' },
-    { key: 'pe',       label: '%PE',       cibleKey: 'pct_pe_cible' },
-    { key: 'alu',      label: '%Alu',      cibleKey: 'pct_alu_cible' },
-    { key: 'ecoLithe', label: '%EcoLithe', cibleKey: 'pct_ecolithe_cible' },
-  ]
+  const COMP_PARAMS = COMP_PARAMS_FULL
 
   return (
     <div>
@@ -255,6 +250,7 @@ export default function Historique() {
                 <div className="flex gap-6 text-sm flex-wrap">
                   <span><strong className="text-gray-900">{Math.round(masseTotale).toLocaleString('fr-FR')} kg</strong> <span className="text-gray-400">total</span></span>
                   {comp && <span><strong className="text-gray-900">{fmt1(comp.pp)}% PP</strong> <span className="text-gray-400">/ {fmt1(comp.pe)}% PE / {fmt1(comp.alu)}% Alu</span></span>}
+                  {comp && <span className="text-gray-400">{fmt1(comp.blanc)}% Blanc / {fmt1(comp.transp)}% Transp. / {fmt1(comp.noir)}% Noir</span>}
                   {cout > 0 && <span><strong className="text-gray-900">{Math.round(cout).toLocaleString('fr-FR')} €</strong> <span className="text-gray-400">({coutParTonne} €/t)</span></span>}
                 </div>
                 {batch.notes && <p className="mt-2 text-xs text-gray-400 border-t border-gray-50 pt-2">📝 {batch.notes}</p>}
@@ -311,7 +307,7 @@ export default function Historique() {
                       <th className="text-right py-1 text-xs font-medium text-gray-500">Écart</th>
                     </tr></thead>
                     <tbody className="divide-y divide-gray-50">
-                      {COMP_PARAMS.filter(p => (rc[p.cibleKey] ?? 0) > 0 || comp[p.key] > 0).map(p => (
+                      {COMP_PARAMS.map(p => (
                         <tr key={p.key}>
                           <td className="py-2 font-medium text-gray-700">{p.label}</td>
                           <td className="py-2 text-right tabular-nums">{fmt1(comp[p.key])}%</td>

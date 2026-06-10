@@ -55,6 +55,8 @@ export function calcComposition(lignes) {
     alu:         plastique > 0 ? (alu         / plastique) * 100 : 0,
     autres:      plastique > 0 ? (autres      / plastique) * 100 : 0,
     autresPlast: plastique > 0 ? (autresPlast / plastique) * 100 : 0,
+    // Cumul des deux champs "autres plastiques" (pct_autres legacy + pct_autres_plastiques)
+    autresPlastTotal: plastique > 0 ? ((autres + autresPlast) / plastique) * 100 : 0,
     blanc:       plastique > 0 ? (blanc       / plastique) * 100 : 0,
     transp:      plastique > 0 ? (transp      / plastique) * 100 : 0,
     noir:        plastique > 0 ? (noir        / plastique) * 100 : 0,
@@ -63,6 +65,22 @@ export function calcComposition(lignes) {
     chargeMin:   (chargeMin / total) * 100,
   }
 }
+
+// Liste complète des paramètres de composition à afficher dans les tableaux
+// "résultat vs cible" (écran ET impression) — source unique pour toutes les pages.
+// Les couleurs (blanc, transparent, noir, autres) font partie des statistiques.
+export const COMP_PARAMS_FULL = [
+  { key: 'pp',               label: '%PP',            cibleKey: 'pct_pp_cible' },
+  { key: 'pe',               label: '%PE',            cibleKey: 'pct_pe_cible' },
+  { key: 'alu',              label: '%Alu',           cibleKey: 'pct_alu_cible' },
+  { key: 'autresPlastTotal', label: '%Autres plast.', cibleKey: 'pct_autres_cible' },
+  { key: 'blanc',            label: '%Blanc',         cibleKey: 'pct_blanc_cible' },
+  { key: 'transp',           label: '%Transparent',   cibleKey: 'pct_transparent_cible' },
+  { key: 'noir',             label: '%Noir',          cibleKey: 'pct_noir_cible' },
+  { key: 'autresCoul',       label: '%Autres coul.',  cibleKey: 'pct_autres_coul_cible' },
+  { key: 'ecoLithe',         label: '%EcoLithe',      cibleKey: 'pct_ecolithe_cible' },
+  { key: 'chargeMin',        label: '%Charge min.',   cibleKey: 'pct_charge_minerale_cible' },
+]
 
 // Coût total d'un batch en euros
 export function calcCout(lignes) {

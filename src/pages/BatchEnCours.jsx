@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase.js'
-import { calcComposition, calcCout, fmt1, effectiveMp } from '../lib/calculs.js'
+import { calcComposition, calcCout, fmt1, effectiveMp, COMP_PARAMS_FULL } from '../lib/calculs.js'
 import { restaurerSacsConsommes, lignesRestaurables, lignePourSac, sacUpdatePourPrise } from '../lib/batchOps.js'
 import EcartBadge from '../components/EcartBadge.jsx'
 import Modal from '../components/Modal.jsx'
@@ -345,16 +345,7 @@ export default function BatchEnCours() {
     const comp = calcComposition(lignesEnrichies)
     const masseTotale = batch.lignes.reduce((s, l) => s + l.masse_totale_kg, 0)
 
-    const COMP_PARAMS_PRINT = [
-      { key: 'pp',        label: '%PP',          cibleKey: 'pct_pp_cible' },
-      { key: 'pe',        label: '%PE',          cibleKey: 'pct_pe_cible' },
-      { key: 'alu',       label: '%Alu',         cibleKey: 'pct_alu_cible' },
-      { key: 'blanc',     label: '%Blanc',       cibleKey: 'pct_blanc_cible' },
-      { key: 'transp',    label: '%Transp.',     cibleKey: 'pct_transparent_cible' },
-      { key: 'noir',      label: '%Noir',        cibleKey: 'pct_noir_cible' },
-      { key: 'ecoLithe',  label: '%EcoLithe',    cibleKey: 'pct_ecolithe_cible' },
-      { key: 'chargeMin', label: '%Charge min.', cibleKey: 'pct_charge_minerale_cible' },
-    ]
+    const COMP_PARAMS_PRINT = COMP_PARAMS_FULL
 
     // Échappement HTML basique pour les valeurs venant de l'utilisateur
     const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]))
@@ -407,7 +398,6 @@ export default function BatchEnCours() {
     }).join('')
 
     const compHtml = comp && rc ? COMP_PARAMS_PRINT
-      .filter(p => (rc[p.cibleKey] ?? 0) > 0 || comp[p.key] > 0)
       .map(p => {
         const e = comp[p.key] - (rc[p.cibleKey] ?? 0)
         const color = Math.abs(e) <= 2 ? '#166534' : Math.abs(e) <= 5 ? '#92400e' : '#991b1b'
@@ -471,13 +461,7 @@ ${compHtml ? `<h2 style="font-size:14px;margin-bottom:8px;">Composition résulta
     win.document.close()
   }
 
-  const COMP_PARAMS = [
-    { key: 'pp',        label: '%PP',          cibleKey: 'pct_pp_cible' },
-    { key: 'pe',        label: '%PE',          cibleKey: 'pct_pe_cible' },
-    { key: 'alu',       label: '%Alu',         cibleKey: 'pct_alu_cible' },
-    { key: 'ecoLithe',  label: '%EcoLithe',    cibleKey: 'pct_ecolithe_cible' },
-    { key: 'chargeMin', label: '%Charge min.', cibleKey: 'pct_charge_minerale_cible' },
-  ]
+  const COMP_PARAMS = COMP_PARAMS_FULL
 
   return (
     <div>
@@ -635,7 +619,7 @@ ${compHtml ? `<h2 style="font-size:14px;margin-bottom:8px;">Composition résulta
                   <div className="px-4 py-3 bg-gray-50 border-t border-gray-100">
                     <p className="text-xs font-medium text-gray-500 mb-2">Composition vs cible</p>
                     <div className="flex flex-wrap gap-3">
-                      {COMP_PARAMS.filter(p => (rc[p.cibleKey] ?? 0) > 0 || comp[p.key] > 0).map(p => (
+                      {COMP_PARAMS.map(p => (
                         <div key={p.key} className="flex items-center gap-1.5 text-xs">
                           <span className="text-gray-500">{p.label}</span>
                           <span className="font-medium">{fmt1(comp[p.key])}%</span>
