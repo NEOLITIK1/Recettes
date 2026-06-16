@@ -412,6 +412,23 @@ export default function Optimiseur() {
       }
     }
     const sel = optimiser(sacsFiltrés, mpsMap, recette, masseCible, mpsForcees, seed, rcId)
+
+    // Avertir si une MP imposée n'a pas pu être couverte par le stock disponible
+    // (sinon la masse est silencieusement plafonnée → écart de poids inexpliqué)
+    const warns = []
+    for (const f of mpsForcees) {
+      if (!f.mpId || parseFloat(f.masse) <= 0) continue
+      const demande = parseFloat(f.masse)
+      const pris = sel.filter(s => s.forced && s.sac.mp_id === f.mpId).reduce((a, s) => a + s.taken, 0)
+      if (pris < demande - 0.5) {
+        const mp = mpsMap[f.mpId]
+        warns.push(`• ${mp?.nom ?? f.mpId} : ${Math.round(demande)} kg demandés, seulement ${Math.round(pris)} kg disponibles en stock`)
+      }
+    }
+    if (warns.length) {
+      alert(`⚠ Matières imposées non couvertes par le stock :\n\n${warns.join('\n')}\n\nLa proposition utilise ce qui est disponible — le poids total sera donc inférieur à la cible. Ajoutez des sacs en stock ou réduisez la quantité imposée.`)
+    }
+
     const nouvellesProps = [...propositions.slice(0, propIndex + 1), sel]
     setPropositions(nouvellesProps)
     setPropIndex(nouvellesProps.length - 1)

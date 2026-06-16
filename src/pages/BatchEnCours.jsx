@@ -30,6 +30,10 @@ export default function BatchEnCours() {
   // Modal suppression
   const [modalSuppr, setModalSuppr] = useState(null) // batch
 
+  // Modal édition masse d'une ligne (correction opérateur sans repasser par l'optimiseur)
+  const [modalEditLigne, setModalEditLigne] = useState(null) // ligne
+  const [editMasse, setEditMasse] = useState('')
+
   const navigate = useNavigate()
 
   useEffect(() => { fetchAll() }, [])
@@ -144,6 +148,65 @@ export default function BatchEnCours() {
     }
     if (!confirm(msg)) return
     await supabase.from('batches').update({ statut: 'cloture' }).eq('id', batch.id)
+    fetchAll()
+  }
+
+  // ── Modifier la masse d'une ligne (correction directe, sans optimiseur) ──────
+  // Le delta est répercuté sur le sac source : réduire la ligne restitue la
+  // matière au sac, augmenter prélève davantage (dans la limite du disponible).
+  function ouvrirEditLigne(ligne) {
+    setModalEditLigne(ligne)
+    setEditMasse(String(Math.round(ligne.masse_totale_kg ?? 0)))
+  }
+  async function modifierMasseLigne() {
+    const ligne = modalEditLigne
+    if (!ligne) return
+    const nouvelleMasse = parseFloat(editMasse)
+    if (!nouvelleMasse || nouvelleMasse <= 0) { alert('Masse invalide.'); return }
+    const ancienneMasse = ligne.masse_totale_kg ?? 0
+    const delta = nouvelleMasse - ancienneMasse // >0 = prélever plus, <0 = restituer
+    if (Math.abs(delta) < 0.5) { setModalEditLigne(null); return }
+
+    const sc = Array.isArray(ligne.sacs_consommes) ? ligne.sacs_consommes : []
+    const trackedSingle = sc.length === 1 && sc[0]?.sac_id
+
+    if (trackedSingle) {
+      const entry = sc[0]
+      const { data: sac } = await supabase
+        .from('sacs').select('id, masse_kg, statut').eq('id', entry.sac_id).maybeSingle()
+      if (!sac) {
+        if (!confirm("Le sac source n'existe plus en stock. Modifier seulement la masse de la ligne, sans ajuster le stock ?")) return
+      } else {
+        const nouvelleMasseSac = (sac.masse_kg ?? 0) - delta
+        if (nouvelleMasseSac < -0.5) {
+          alert(`Impossible : il faudrait prélever ${Math.round(delta)} kg de plus, mais le sac ne contient que ${Math.round(sac.masse_kg ?? 0)} kg disponibles.`)
+          return
+        }
+        const masseAvant = entry.masse_avant_kg ?? nouvelleMasse
+        const masseSacFinale = Math.max(0, Math.round(nouvelleMasseSac))
+        const statutFinal = masseSacFinale <= 0
+          ? 'consomme'
+          : (masseSacFinale >= masseAvant - 0.5 ? (entry.statut_avant ?? 'disponible') : 'partiel')
+        const { error: sErr } = await supabase.from('sacs').update({
+          masse_kg: masseSacFinale, statut: statutFinal, updated_at: new Date().toISOString(),
+        }).eq('id', sac.id)
+        if (sErr) { alert(`Erreur lors de l'ajustement du stock.\n${sErr.message}`); return }
+      }
+      // Mettre à jour le snapshot pour que la restitution future reste exacte
+      const newSc = [{ ...entry, masse_prise: nouvelleMasse }]
+      const { error: lErr } = await supabase.from('batch_lignes').update({
+        masse_totale_kg: nouvelleMasse, sacs_kg: [nouvelleMasse], sacs_consommes: newSc,
+      }).eq('id', ligne.id)
+      if (lErr) { alert(`Erreur lors de la mise à jour de la ligne.\n${lErr.message}`); return }
+    } else {
+      if (!confirm("Cette ligne n'a pas de sac source unique tracé (batch ancien ou manuel) : la masse sera modifiée mais le stock ne sera PAS ajusté automatiquement. Continuer ?")) return
+      const { error: lErr } = await supabase.from('batch_lignes').update({
+        masse_totale_kg: nouvelleMasse, sacs_kg: [nouvelleMasse],
+      }).eq('id', ligne.id)
+      if (lErr) { alert(`Erreur lors de la mise à jour de la ligne.\n${lErr.message}`); return }
+    }
+    setModalEditLigne(null)
+    setEditMasse('')
     fetchAll()
   }
 
@@ -595,9 +658,17 @@ ${compHtml ? `<h2 style="font-size:14px;margin-bottom:8px;">Composition résulta
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-50">
-                    {batch.lignes.map(l => (
+                    {batch.lignes.map(l => {
+                      const sc = Array.isArray(l.sacs_consommes) ? l.sacs_consommes : []
+                      const lotInfo = sc.length === 1
+                        ? (sc[0].numero_lot_fournisseur ? `N°lot ${sc[0].numero_lot_fournisseur}` : sc[0].reference)
+                        : null
+                      return (
                       <tr key={l.id} className="hover:bg-gray-50">
-                        <td className="px-4 py-3 text-gray-900">{mpsMap[l.mp_id]?.nom ?? l.mp_id}</td>
+                        <td className="px-4 py-3 text-gray-900">
+                          {mpsMap[l.mp_id]?.nom ?? l.mp_id}
+                          {lotInfo && <span className="ml-2 text-xs text-gray-400">{lotInfo}</span>}
+                        </td>
                         <td className="px-4 py-3 text-right font-semibold tabular-nums">{Math.round(l.masse_totale_kg).toLocaleString('fr-FR')} kg</td>
                         <td className="px-4 py-3">
                           <div className="flex flex-wrap gap-1">
@@ -606,11 +677,13 @@ ${compHtml ? `<h2 style="font-size:14px;margin-bottom:8px;">Composition résulta
                             ))}
                           </div>
                         </td>
-                        <td className="px-4 py-3 text-right">
+                        <td className="px-4 py-3 text-right whitespace-nowrap">
+                          <button onClick={() => ouvrirEditLigne(l)} className="text-xs text-blue-500 hover:text-blue-700 mr-3">Modifier</button>
                           <button onClick={() => supprimerLigne(l)} className="text-xs text-red-400 hover:text-red-600">Supprimer</button>
                         </td>
                       </tr>
-                    ))}
+                      )
+                    })}
                   </tbody>
                 </table>
 
@@ -762,6 +835,59 @@ ${compHtml ? `<h2 style="font-size:14px;margin-bottom:8px;">Composition résulta
               placeholder="ex: 500" className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2" />
           </div>
         </div>
+      </Modal>
+
+      {/* Modal édition masse d'une ligne */}
+      <Modal
+        open={!!modalEditLigne}
+        onClose={() => setModalEditLigne(null)}
+        title={modalEditLigne ? `Modifier la masse — ${mpsMap[modalEditLigne.mp_id]?.nom ?? modalEditLigne.mp_id}` : ''}
+        footer={
+          <>
+            <button onClick={() => setModalEditLigne(null)} className="px-4 py-2 text-sm border border-gray-200 rounded-lg hover:bg-gray-50">Annuler</button>
+            <button onClick={modifierMasseLigne} className="px-4 py-2 text-sm bg-gray-900 text-white rounded-lg hover:bg-gray-700">Enregistrer</button>
+          </>
+        }
+      >
+        {modalEditLigne && (() => {
+          const sc = Array.isArray(modalEditLigne.sacs_consommes) ? modalEditLigne.sacs_consommes : []
+          const trackedSingle = sc.length === 1 && sc[0]?.sac_id
+          const ancienne = Math.round(modalEditLigne.masse_totale_kg ?? 0)
+          const nouvelle = parseFloat(editMasse) || 0
+          const delta = Math.round(nouvelle - ancienne)
+          const sacActuel = trackedSingle ? sacsMap[sc[0].sac_id] : null
+          return (
+            <div className="space-y-3">
+              <div className="bg-gray-50 rounded-lg p-3 text-xs space-y-1">
+                <div className="flex justify-between"><span className="text-gray-500">Masse actuelle de la ligne</span><span className="font-semibold tabular-nums">{ancienne.toLocaleString('fr-FR')} kg</span></div>
+                {trackedSingle && (
+                  <div className="flex justify-between"><span className="text-gray-500">Reste du sac source en stock</span><span className="font-semibold tabular-nums">{Math.round(sacActuel?.masse_kg ?? 0).toLocaleString('fr-FR')} kg</span></div>
+                )}
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Nouvelle masse (kg)</label>
+                <input
+                  type="number" min="1" autoFocus
+                  value={editMasse}
+                  onChange={e => setEditMasse(e.target.value)}
+                  className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-gray-400"
+                />
+              </div>
+              {delta !== 0 && trackedSingle && (
+                <p className="text-xs text-gray-600">
+                  {delta < 0
+                    ? `↩ ${Math.abs(delta)} kg seront restitués au sac source en stock.`
+                    : `→ ${delta} kg supplémentaires seront prélevés du sac source.`}
+                </p>
+              )}
+              {!trackedSingle && (
+                <p className="text-xs text-amber-700 bg-amber-50 rounded p-2">
+                  ⚠ Pas de sac source unique tracé : la masse de la ligne sera modifiée mais le stock ne sera pas ajusté automatiquement.
+                </p>
+              )}
+            </div>
+          )
+        })()}
       </Modal>
 
       {/* Modal suppression */}
