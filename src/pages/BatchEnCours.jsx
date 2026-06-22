@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase.js'
-import { calcComposition, calcCout, fmt1, effectiveMp, COMP_PARAMS_FULL } from '../lib/calculs.js'
+import { calcComposition, calcCout, fmt1, effectiveMp, COMP_PARAMS_FULL, ratioProduction } from '../lib/calculs.js'
 import { restaurerSacsConsommes, lignesRestaurables, lignePourSac, sacUpdatePourPrise } from '../lib/batchOps.js'
 import EcartBadge from '../components/EcartBadge.jsx'
 import Modal from '../components/Modal.jsx'
@@ -486,6 +486,7 @@ export default function BatchEnCours() {
     const rc = recettes.find(r => r.id === batch.recette_id)
     const lignesEnrichies = batch.lignes.map(l => ({ mp: effectiveMp(mpsMap[l.mp_id], l.composition_snapshot), masse_totale_kg: l.masse_totale_kg, sacs_kg: l.sacs_kg }))
     const comp = calcComposition(lignesEnrichies)
+    const ratioProd = ratioProduction(comp)
     const masseTotale = batch.lignes.reduce((s, l) => s + l.masse_totale_kg, 0)
 
     const COMP_PARAMS_PRINT = COMP_PARAMS_FULL
@@ -552,6 +553,25 @@ export default function BatchEnCours() {
         </tr>`
       }).join('') : ''
 
+    // Bloc "Mélange production" : ratio sable/plastique à viser si sable pré-intégré
+    let prodHtml = ''
+    if (ratioProd) {
+      if (ratioProd.impossible) {
+        prodHtml = `<div style="margin-bottom:24px;padding:12px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;">
+          <div style="font-weight:700;color:#92400e;margin-bottom:4px;">🏭 Mélange production</div>
+          <div style="font-size:13px;color:#92400e;">Ce batch contient déjà <strong>${fmt1(ratioProd.mineralPct)}%</strong> de sable/minéral, soit autant ou plus que la cible standard (${ratioProd.sableStd}/${ratioProd.plastStd}). <strong>Ne pas ajouter de sable</strong> en production.</div>
+        </div>`
+      } else {
+        const sableAjout = Math.round(masseTotale * ratioProd.sablePct / ratioProd.plastiquePct)
+        prodHtml = `<div style="margin-bottom:24px;padding:12px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;">
+          <div style="font-weight:700;color:#92400e;margin-bottom:4px;">🏭 Mélange production — sable déjà pré-intégré</div>
+          <div style="font-size:13px;color:#92400e;">Ce batch contient déjà <strong>${fmt1(ratioProd.mineralPct)}%</strong> de sable/minéral. Au lieu du standard ${ratioProd.sableStd}/${ratioProd.plastStd}, viser :</div>
+          <div style="font-size:16px;font-weight:700;color:#78350f;margin-top:4px;">${Math.round(ratioProd.sablePct)}% sable · ${Math.round(ratioProd.plastiquePct)}% plastique (ce batch)</div>
+          <div style="font-size:12px;color:#a16207;margin-top:2px;">soit ≈ <strong>${sableAjout.toLocaleString('fr-FR')} kg de sable à ajouter</strong> pour ${Math.round(masseTotale).toLocaleString('fr-FR')} kg de batch</div>
+        </div>`
+      }
+    }
+
     const html = `<!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -581,6 +601,8 @@ export default function BatchEnCours() {
   <thead><tr><th>Matière</th><th style="text-align:right;">Total</th><th>Répartition sacs</th></tr></thead>
   <tbody>${lignesHtml}</tbody>
 </table>
+
+${prodHtml}
 
 ${compHtml ? `<h2 style="font-size:14px;margin-bottom:8px;">Composition résultante vs cible</h2>
 <table>
@@ -625,6 +647,7 @@ ${compHtml ? `<h2 style="font-size:14px;margin-bottom:8px;">Composition résulta
             const rc = recettes.find(r => r.id === batch.recette_id)
             const lignesEnrichies = batch.lignes.map(l => ({ mp: effectiveMp(mpsMap[l.mp_id], l.composition_snapshot), masse_totale_kg: l.masse_totale_kg }))
             const comp = calcComposition(lignesEnrichies)
+            const ratioProd = ratioProduction(comp)
             const { total, consommee, reste, restanteMelange, ecartPct } = bilanBatch(batch)
             const pctConso = total > 0 ? Math.min(100, (consommee / total) * 100) : 0
             const pctReste = total > 0 ? Math.min(100 - pctConso, (reste / total) * 100) : 0
@@ -781,6 +804,35 @@ ${compHtml ? `<h2 style="font-size:14px;margin-bottom:8px;">Composition résulta
                         </div>
                       ))}
                     </div>
+                  </div>
+                )}
+
+                {/* Ratio sable/plastique à viser en production (si sable/minéral pré-intégré) */}
+                {ratioProd && (
+                  <div className="px-4 py-3 bg-amber-50 border-t border-amber-100">
+                    <p className="text-xs font-medium text-amber-900 mb-1">
+                      🏭 Mélange production — sable déjà pré-intégré
+                    </p>
+                    {ratioProd.impossible ? (
+                      <p className="text-xs text-amber-800">
+                        Ce batch contient déjà <strong>{fmt1(ratioProd.mineralPct)}%</strong> de sable/minéral,
+                        soit autant ou plus que la cible standard ({ratioProd.sableStd}/{ratioProd.plastStd}). Ne pas ajouter de sable en production
+                        (le batch dépasse déjà la proportion minérale visée).
+                      </p>
+                    ) : (
+                      <>
+                        <p className="text-xs text-amber-800">
+                          Ce batch contient déjà <strong>{fmt1(ratioProd.mineralPct)}%</strong> de sable/minéral.
+                          Au lieu du standard {ratioProd.sableStd}/{ratioProd.plastStd}, viser en production :
+                        </p>
+                        <p className="text-sm font-semibold text-amber-900 mt-1">
+                          {Math.round(ratioProd.sablePct)}% sable · {Math.round(ratioProd.plastiquePct)}% plastique (ce batch)
+                          <span className="font-normal text-amber-700 text-xs ml-2">
+                            soit ≈ {Math.round(total * ratioProd.sablePct / ratioProd.plastiquePct).toLocaleString('fr-FR')} kg de sable à ajouter pour {Math.round(total).toLocaleString('fr-FR')} kg de batch
+                          </span>
+                        </p>
+                      </>
+                    )}
                   </div>
                 )}
               </div>

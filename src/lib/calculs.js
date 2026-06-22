@@ -82,6 +82,44 @@ export const COMP_PARAMS_FULL = [
   { key: 'chargeMin',        label: '%Charge min.',   cibleKey: 'pct_charge_minerale_cible' },
 ]
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Ratio sable/plastique à viser en PRODUCTION
+// ─────────────────────────────────────────────────────────────────────────────
+// Le batch créé ici est notre "plastique". En production il est mélangé avec du
+// sable pour faire la dalle finale. Standard : 60% sable / 40% plastique.
+// MAIS si le batch contient déjà du sable/minéral (EcoLithe à 60% sable, charge
+// minérale…), ce sable est "pré-intégré" : il faut donc en ajouter MOINS en
+// production pour que la dalle finale garde la bonne proportion de plastique pur.
+//
+// Pour atteindre PROD_PLAST_STD% de plastique PUR dans la dalle finale, la part
+// de batch dans le mélange doit être (PROD_PLAST_STD / p), où p = fraction de
+// plastique pur du batch. Le sable ajouté occupe le reste.
+export const PROD_SABLE_STD = 60 // % de sable dans la dalle standard
+export const PROD_PLAST_STD = 40 // % de plastique pur dans la dalle standard
+
+// comp = sortie de calcComposition (ecoLithe% et chargeMin% sont exprimés sur le total).
+// Retourne null si le batch ne contient pas de sable/minéral (le ratio standard s'applique).
+export function ratioProduction(comp, { sableStd = PROD_SABLE_STD, plastStd = PROD_PLAST_STD } = {}) {
+  if (!comp || !comp.total) return null
+  const mineralPct = (comp.ecoLithe ?? 0) + (comp.chargeMin ?? 0) // sable EcoLithe + charge minérale
+  if (mineralPct <= 0.05) return null // pas de sable pré-intégré → ratio standard, rien à signaler
+  const p = 1 - mineralPct / 100 // fraction de plastique PUR dans le batch
+  if (p <= 0) return { impossible: true, mineralPct, plastiquePct: 100, sablePct: 0, sableStd, plastStd }
+  const fBatch = (plastStd / 100) / p // part du batch ("plastique") dans le mélange de production
+  if (fBatch >= 1) {
+    // Le batch contient déjà autant ou plus de minéral que la cible : on ne peut
+    // plus atteindre la proportion voulue en ajoutant du sable.
+    return { impossible: true, mineralPct, plastiquePct: 100, sablePct: 0, sableStd, plastStd }
+  }
+  return {
+    impossible: false,
+    mineralPct,                       // % sable/minéral déjà dans le batch
+    plastiquePct: fBatch * 100,       // % de batch à mettre dans le mélange production
+    sablePct: (1 - fBatch) * 100,     // % de sable à AJOUTER en production
+    sableStd, plastStd,
+  }
+}
+
 // Coût total d'un batch en euros
 export function calcCout(lignes) {
   return lignes.reduce((sum, { mp, masse_totale_kg }) => {
