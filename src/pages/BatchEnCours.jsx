@@ -553,16 +553,22 @@ export default function BatchEnCours() {
         </tr>`
       }).join('') : ''
 
-    // Bloc "Mélange production" : ratio sable/plastique à viser si sable pré-intégré
+    // Bloc "Mélange production" : ratio sable/plastique à viser
     let prodHtml = ''
     if (ratioProd) {
+      const sableAjout = Math.round(masseTotale * ratioProd.sablePct / ratioProd.plastiquePct)
       if (ratioProd.impossible) {
         prodHtml = `<div style="margin-bottom:24px;padding:12px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;">
           <div style="font-weight:700;color:#92400e;margin-bottom:4px;">🏭 Mélange production</div>
           <div style="font-size:13px;color:#92400e;">Ce batch contient déjà <strong>${fmt1(ratioProd.mineralPct)}%</strong> de sable/minéral, soit autant ou plus que la cible standard (${ratioProd.sableStd}/${ratioProd.plastStd}). <strong>Ne pas ajouter de sable</strong> en production.</div>
         </div>`
+      } else if (ratioProd.standard) {
+        prodHtml = `<div style="margin-bottom:24px;padding:12px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;">
+          <div style="font-weight:700;color:#1e3a8a;margin-bottom:4px;">🏭 Mélange production</div>
+          <div style="font-size:16px;font-weight:700;color:#1e3a8a;">Viser ${ratioProd.sableStd}% sable · ${ratioProd.plastStd}% plastique (ce batch)</div>
+          <div style="font-size:12px;color:#1d4ed8;margin-top:2px;">soit ≈ <strong>${sableAjout.toLocaleString('fr-FR')} kg de sable à ajouter</strong> pour ${Math.round(masseTotale).toLocaleString('fr-FR')} kg de batch</div>
+        </div>`
       } else {
-        const sableAjout = Math.round(masseTotale * ratioProd.sablePct / ratioProd.plastiquePct)
         prodHtml = `<div style="margin-bottom:24px;padding:12px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;">
           <div style="font-weight:700;color:#92400e;margin-bottom:4px;">🏭 Mélange production — sable déjà pré-intégré</div>
           <div style="font-size:13px;color:#92400e;">Ce batch contient déjà <strong>${fmt1(ratioProd.mineralPct)}%</strong> de sable/minéral. Au lieu du standard ${ratioProd.sableStd}/${ratioProd.plastStd}, viser :</div>
@@ -807,17 +813,24 @@ ${compHtml ? `<h2 style="font-size:14px;margin-bottom:8px;">Composition résulta
                   </div>
                 )}
 
-                {/* Ratio sable/plastique à viser en production (si sable/minéral pré-intégré) */}
+                {/* Ratio sable/plastique à viser en production */}
                 {ratioProd && (
-                  <div className="px-4 py-3 bg-amber-50 border-t border-amber-100">
-                    <p className="text-xs font-medium text-amber-900 mb-1">
-                      🏭 Mélange production — sable déjà pré-intégré
+                  <div className={`px-4 py-3 border-t ${ratioProd.standard ? 'bg-blue-50 border-blue-100' : 'bg-amber-50 border-amber-100'}`}>
+                    <p className={`text-xs font-medium mb-1 ${ratioProd.standard ? 'text-blue-900' : 'text-amber-900'}`}>
+                      🏭 Mélange production{ratioProd.standard ? '' : ' — sable déjà pré-intégré'}
                     </p>
                     {ratioProd.impossible ? (
                       <p className="text-xs text-amber-800">
                         Ce batch contient déjà <strong>{fmt1(ratioProd.mineralPct)}%</strong> de sable/minéral,
                         soit autant ou plus que la cible standard ({ratioProd.sableStd}/{ratioProd.plastStd}). Ne pas ajouter de sable en production
                         (le batch dépasse déjà la proportion minérale visée).
+                      </p>
+                    ) : ratioProd.standard ? (
+                      <p className="text-sm font-semibold text-blue-900">
+                        Viser {ratioProd.sableStd}% sable · {ratioProd.plastStd}% plastique (ce batch)
+                        <span className="font-normal text-blue-700 text-xs ml-2">
+                          soit ≈ {Math.round(total * ratioProd.sablePct / ratioProd.plastiquePct).toLocaleString('fr-FR')} kg de sable à ajouter pour {Math.round(total).toLocaleString('fr-FR')} kg de batch
+                        </span>
                       </p>
                     ) : (
                       <>

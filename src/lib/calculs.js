@@ -98,21 +98,23 @@ export const PROD_SABLE_STD = 60 // % de sable dans la dalle standard
 export const PROD_PLAST_STD = 40 // % de plastique pur dans la dalle standard
 
 // comp = sortie de calcComposition (ecoLithe% et chargeMin% sont exprimés sur le total).
-// Retourne null si le batch ne contient pas de sable/minéral (le ratio standard s'applique).
+// Retourne null seulement si la composition est vide.
+//   standard:true   → batch sans sable pré-intégré, le ratio 60/40 s'applique tel quel
+//   impossible:true → batch déjà trop chargé en minéral, on ne peut plus viser la cible
 export function ratioProduction(comp, { sableStd = PROD_SABLE_STD, plastStd = PROD_PLAST_STD } = {}) {
   if (!comp || !comp.total) return null
   const mineralPct = (comp.ecoLithe ?? 0) + (comp.chargeMin ?? 0) // sable EcoLithe + charge minérale
-  if (mineralPct <= 0.05) return null // pas de sable pré-intégré → ratio standard, rien à signaler
   const p = 1 - mineralPct / 100 // fraction de plastique PUR dans le batch
-  if (p <= 0) return { impossible: true, mineralPct, plastiquePct: 100, sablePct: 0, sableStd, plastStd }
+  if (p <= 0) return { impossible: true, standard: false, mineralPct, plastiquePct: 100, sablePct: 0, sableStd, plastStd }
   const fBatch = (plastStd / 100) / p // part du batch ("plastique") dans le mélange de production
   if (fBatch >= 1) {
     // Le batch contient déjà autant ou plus de minéral que la cible : on ne peut
     // plus atteindre la proportion voulue en ajoutant du sable.
-    return { impossible: true, mineralPct, plastiquePct: 100, sablePct: 0, sableStd, plastStd }
+    return { impossible: true, standard: false, mineralPct, plastiquePct: 100, sablePct: 0, sableStd, plastStd }
   }
   return {
     impossible: false,
+    standard: mineralPct <= 0.05,     // pas de sable pré-intégré → ratio standard 60/40
     mineralPct,                       // % sable/minéral déjà dans le batch
     plastiquePct: fBatch * 100,       // % de batch à mettre dans le mélange production
     sablePct: (1 - fBatch) * 100,     // % de sable à AJOUTER en production
