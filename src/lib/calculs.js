@@ -142,6 +142,70 @@ export function ratioProduction(comp, { sableStd = PROD_SABLE_STD, plastStd = PR
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Suggestions de réapprovisionnement
+// ─────────────────────────────────────────────────────────────────────────────
+// À partir de la composition actuelle d'un batch (comp) et de la recette cible,
+// estime les matières/quantités à AJOUTER pour atteindre les ratios (on ne peut
+// qu'ajouter, jamais retirer). Sert à anticiper les achats.
+//
+// Principe par axe : le composant le plus "en excès" (déjà au-dessus de sa cible)
+// fixe la masse minimale du mélange ; on calcule alors combien ajouter des autres.
+// Estimations indépendantes par axe (polymères / couleurs / minéral) : un même
+// sac acheté (ex: PE blanc) peut couvrir plusieurs lignes à la fois.
+export function suggestionsAjout(comp, recette) {
+  if (!comp || !comp.total || !recette) return null
+  const T = comp.total
+  const mineralPct = (comp.ecoLithe ?? 0) + (comp.chargeMin ?? 0)
+  const P = T * (1 - mineralPct / 100) // masse plastique
+
+  // Axe à base fixe (plastique) : PP/PE/Alu et Blanc/Transp/Noir
+  function axe(base, items) {
+    const avecCible = items.filter(it => it.cible > 0)
+    let baseCible = base
+    for (const it of avecCible) {
+      const need = it.cur > 0 ? (it.cur / it.cible) * base : 0
+      if (need > baseCible) baseCible = need
+    }
+    const ajouts = []
+    for (const it of avecCible) {
+      const a = (it.cible / 100) * baseCible - (it.cur / 100) * base
+      if (a > Math.max(2, base * 0.005)) ajouts.push({ label: it.label, kg: Math.round(a) })
+    }
+    const exces = items
+      .filter(it => (it.cible ?? 0) <= 0 && it.cur > 0.5)
+      .map(it => it.label)
+    return { ajouts, exces }
+  }
+
+  const polymeres = axe(P, [
+    { label: 'PP', cur: comp.pp ?? 0, cible: recette.pct_pp_cible ?? 0 },
+    { label: 'PE', cur: comp.pe ?? 0, cible: recette.pct_pe_cible ?? 0 },
+    { label: 'Alu', cur: comp.alu ?? 0, cible: recette.pct_alu_cible ?? 0 },
+  ])
+  const couleurs = axe(P, [
+    { label: 'Blanc', cur: comp.blanc ?? 0, cible: recette.pct_blanc_cible ?? 0 },
+    { label: 'Transparent', cur: comp.transp ?? 0, cible: recette.pct_transparent_cible ?? 0 },
+    { label: 'Noir', cur: comp.noir ?? 0, cible: recette.pct_noir_cible ?? 0 },
+  ])
+
+  // Minéral : base = total (le total grandit quand on ajoute du sable)
+  function mineral(curKey, cibleKey, label) {
+    const cur = comp[curKey] ?? 0
+    const cible = recette[cibleKey] ?? 0
+    if (cible <= 0 || cur >= cible || cible >= 100) return null
+    const a = T * (cible - cur) / (100 - cible)
+    return a > 2 ? { label, kg: Math.round(a) } : null
+  }
+  const minerals = [
+    mineral('ecoLithe', 'pct_ecolithe_cible', 'Sable (EcoLithe)'),
+    mineral('chargeMin', 'pct_charge_minerale_cible', 'Charge minérale'),
+  ].filter(Boolean)
+
+  const rien = polymeres.ajouts.length === 0 && couleurs.ajouts.length === 0 && minerals.length === 0
+  return { polymeres, couleurs, minerals, masseActuelle: Math.round(T), rien }
+}
+
 // Coût total d'un batch en euros
 export function calcCout(lignes) {
   return lignes.reduce((sum, { mp, masse_totale_kg }) => {

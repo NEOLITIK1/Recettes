@@ -4,6 +4,7 @@ import { calcComposition, calcCout, fmt1, effectiveMp, COMP_PARAMS_FULL } from '
 import { creerBatchAvecStock, lignePourSac, sacUpdatePourPrise } from '../lib/batchOps.js'
 import EcartBadge from '../components/EcartBadge.jsx'
 import TooltipMp from '../components/TooltipMp.jsx'
+import SuggestionsReappro from '../components/SuggestionsReappro.jsx'
 
 export default function ManuelBatch() {
   const [recettes, setRecettes] = useState([])
@@ -17,6 +18,7 @@ export default function ManuelBatch() {
   const [prises, setPrises] = useState([])
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [showReappro, setShowReappro] = useState(false)
 
   useEffect(() => {
     fetchAll()
@@ -283,6 +285,15 @@ export default function ManuelBatch() {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {comp && recette && (
+        <div className="mb-4">
+          <button onClick={() => setShowReappro(s => !s)} className="text-sm px-3 py-2 border border-blue-200 text-blue-700 rounded-lg hover:bg-blue-50">
+            💡 {showReappro ? 'Masquer' : 'Suggérer'} les ajouts pour atteindre la cible (réappro)
+          </button>
+          {showReappro && <div className="mt-3"><SuggestionsReappro comp={comp} recette={recette} /></div>}
         </div>
       )}
 

@@ -44,6 +44,10 @@ export default function Stock() {
   const [filtre, setFiltre] = useState('disponible')
   const [showCompoOverride, setShowCompoOverride] = useState(false)
 
+  // Scindage d'un sac en plusieurs sacs réels (ex: batch récupéré puis pesé)
+  const [modalSplit, setModalSplit] = useState(null) // sac
+  const [splitPoids, setSplitPoids] = useState([''])
+
   useEffect(() => { fetchAll() }, [])
 
   async function fetchAll() {
@@ -133,6 +137,46 @@ export default function Stock() {
 
   async function handleStatut(id, statut) {
     await supabase.from('sacs').update({ statut, updated_at: new Date().toISOString() }).eq('id', id)
+    fetchAll()
+  }
+
+  // ── Scinder un sac en plusieurs sacs (mêmes MP/compo/traçabilité) ────────────
+  function ouvrirSplit(sac) {
+    setModalSplit(sac)
+    setSplitPoids([''])
+  }
+  async function confirmerSplit() {
+    const sac = modalSplit
+    if (!sac) return
+    const poids = splitPoids.map(p => parseFloat(p) || 0).filter(p => p > 0)
+    if (poids.length === 0) { alert('Saisissez au moins un poids.'); return }
+    const somme = poids.reduce((a, b) => a + b, 0)
+    if (somme > (sac.masse_kg ?? 0) + 0.5) {
+      alert(`La somme des sacs (${Math.round(somme)} kg) dépasse la masse du sac d'origine (${Math.round(sac.masse_kg ?? 0)} kg).`)
+      return
+    }
+    const nouveaux = poids.map((p, i) => ({
+      mp_id: sac.mp_id,
+      masse_kg: Math.round(p),
+      reference: `${sac.reference || 'Sac'}-${i + 1}`,
+      statut: 'disponible',
+      fournisseur: sac.fournisseur ?? null,
+      numero_lot_fournisseur: sac.numero_lot_fournisseur ?? null,
+      date_reception: sac.date_reception ?? null,
+      emplacement: sac.emplacement ?? null,
+      composition_override: sac.composition_override ?? null,
+    }))
+    const { error } = await supabase.from('sacs').insert(nouveaux)
+    if (error) { alert(`Erreur lors de la création des sacs.\n${error.message}`); return }
+    // Sac d'origine : reste éventuel sinon suppression
+    const reste = Math.round((sac.masse_kg ?? 0) - somme)
+    if (reste > 0.5) {
+      await supabase.from('sacs').update({ masse_kg: reste, statut: 'partiel', updated_at: new Date().toISOString() }).eq('id', sac.id)
+    } else {
+      await supabase.from('sacs').delete().eq('id', sac.id)
+    }
+    setModalSplit(null)
+    setSplitPoids([''])
     fetchAll()
   }
 
@@ -295,6 +339,11 @@ export default function Stock() {
                         <button onClick={() => openEdit(sac)} className="text-xs px-2 py-1 border border-gray-200 rounded hover:bg-gray-50">
                           Modifier
                         </button>
+                        {sac.statut !== 'consomme' && (
+                          <button onClick={() => ouvrirSplit(sac)} title="Décomposer ce sac en plusieurs sacs réels (une fois pesés)" className="text-xs px-2 py-1 border border-indigo-200 text-indigo-700 rounded hover:bg-indigo-50">
+                            Scinder
+                          </button>
+                        )}
                         {sac.statut === 'disponible' && (
                           <button onClick={() => handleStatut(sac.id, 'partiel')} className="text-xs px-2 py-1 border border-gray-200 rounded hover:bg-gray-50">
                             Partiel
@@ -312,6 +361,58 @@ export default function Stock() {
           </table>
         )}
       </div>
+
+      {/* Modal scindage */}
+      <Modal
+        open={!!modalSplit}
+        onClose={() => setModalSplit(null)}
+        title={modalSplit ? `Scinder le sac — ${getMpNom(modalSplit.mp_id)}` : ''}
+        footer={
+          <>
+            <button onClick={() => setModalSplit(null)} className="px-4 py-2 text-sm border border-gray-200 rounded-lg hover:bg-gray-50">Annuler</button>
+            <button onClick={confirmerSplit} className="px-4 py-2 text-sm bg-indigo-700 text-white rounded-lg hover:bg-indigo-800">Créer les sacs</button>
+          </>
+        }
+      >
+        {modalSplit && (() => {
+          const somme = splitPoids.reduce((a, p) => a + (parseFloat(p) || 0), 0)
+          const masse = modalSplit.masse_kg ?? 0
+          const reste = Math.round(masse - somme)
+          const depasse = somme > masse + 0.5
+          return (
+            <div className="space-y-3">
+              <p className="text-sm text-gray-600">
+                Décompose ce sac de <strong>{Math.round(masse).toLocaleString('fr-FR')} kg</strong> en
+                plusieurs sacs réels (même matière, composition et traçabilité). Idéal après avoir
+                récupéré un batch puis pesé les big bags un par un.
+              </p>
+              <div className="space-y-2">
+                {splitPoids.map((p, i) => (
+                  <div key={i} className="flex gap-2 items-center">
+                    <span className="text-xs text-gray-400 w-12">Sac {i + 1}</span>
+                    <input type="number" min="1" value={p}
+                      onChange={e => setSplitPoids(prev => prev.map((v, idx) => idx === i ? e.target.value : v))}
+                      placeholder="kg" className="w-32 text-sm border border-gray-200 rounded-lg px-3 py-2" />
+                    <span className="text-xs text-gray-400">kg</span>
+                    {splitPoids.length > 1 && (
+                      <button onClick={() => setSplitPoids(prev => prev.filter((_, idx) => idx !== i))} className="text-red-400 hover:text-red-600">×</button>
+                    )}
+                  </div>
+                ))}
+                <button onClick={() => setSplitPoids(prev => [...prev, ''])} className="text-xs text-indigo-600 border border-indigo-200 rounded px-2 py-1">+ sac</button>
+              </div>
+              <div className={`text-xs rounded-lg p-2 ${depasse ? 'bg-red-50 text-red-700' : 'bg-gray-50 text-gray-600'}`}>
+                Total réparti : <strong>{Math.round(somme).toLocaleString('fr-FR')} kg</strong> / {Math.round(masse).toLocaleString('fr-FR')} kg
+                {depasse
+                  ? ' — dépasse la masse du sac !'
+                  : reste > 0
+                    ? ` — il restera ${reste.toLocaleString('fr-FR')} kg dans le sac d'origine (statut partiel).`
+                    : ' — le sac d\'origine sera entièrement réparti (supprimé).'}
+              </div>
+            </div>
+          )
+        })()}
+      </Modal>
 
       <Modal
         open={modalOpen}
