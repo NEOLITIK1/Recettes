@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase.js'
 import { effectiveMp } from '../lib/calculs.js'
 import Modal from '../components/Modal.jsx'
 import TooltipMp from '../components/TooltipMp.jsx'
+import VueParMatiere from '../components/VueParMatiere.jsx'
 
 const STATUT_STYLES = {
   disponible: 'bg-emerald-50 text-emerald-700',
@@ -209,6 +210,9 @@ export default function Stock() {
           </div>
         ))}
       </div>
+
+      {/* Vue par matière (catégories paramétrables) */}
+      <VueParMatiere sacs={sacs} mpsById={mpById} />
 
       {/* Filtre */}
       <div className="flex gap-2 mb-4 flex-wrap">
