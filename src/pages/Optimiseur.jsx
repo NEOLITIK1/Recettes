@@ -3,11 +3,12 @@ import { supabase } from '../lib/supabase.js'
 import { calcComposition, calcCout, fmt1, effectiveMp, COMP_PARAMS_FULL } from '../lib/calculs.js'
 import { creerBatchAvecStock, lignePourSac, sacUpdatePourPrise } from '../lib/batchOps.js'
 import EcartBadge from '../components/EcartBadge.jsx'
+import TooltipMp from '../components/TooltipMp.jsx'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Algorithme : sélection greedy diversifiée + phase d'optimisation fine
 // ─────────────────────────────────────────────────────────────────────────────
-function optimiser(sacsDispo, mpsMap, recette, masseCible, mpsForcees = [], seed = 0, recetteId = '') {
+function optimiser(sacsDispo, mpsMap, recette, masseCible, sacsForces = [], seed = 0, recetteId = '') {
   if (!recette) return []
 
   // Une MP autorisée pour une recette l'est aussi pour ses versions (famille = recette parente)
@@ -19,33 +20,28 @@ function optimiser(sacsDispo, mpsMap, recette, masseCible, mpsForcees = [], seed
     return x - Math.floor(x)
   }
 
-  // 1. MP forcées : sélection de VRAIS sacs du stock pour couvrir la masse imposée
-  // (au lieu d'un sac virtuel, on prend les sacs réels les plus lourds en premier)
+  // 1. Sacs imposés : l'utilisateur a choisi des SACS PRÉCIS (et éventuellement une
+  //    masse partielle par sac). On les prend tels quels, dans l'ordre choisi.
   const idsDejaForcees = new Set()
   const selectionForcee = []
-  for (const f of mpsForcees) {
-    if (!f.mpId || parseFloat(f.masse) <= 0 || !mpsMap[f.mpId]) continue
-    let masseRestante = parseFloat(f.masse)
-    const sacsDeMP = [...sacsDispo]
-      .filter(s => s.mp_id === f.mpId && !idsDejaForcees.has(s.id))
-      .sort((a, b) => (b.masse_kg ?? 0) - (a.masse_kg ?? 0))
-    for (const sac of sacsDeMP) {
-      if (masseRestante <= 0) break
-      const masseSac = sac.masse_kg ?? 0
-      if (masseSac <= 0) continue
-      const taken = Math.min(masseSac, masseRestante)
-      selectionForcee.push({
-        sac,
-        mp: effectiveMp(mpsMap[sac.mp_id], sac.composition_override),
-        taken,
-        partial: taken < masseSac,
-        forced: true,
-        masse_avant_kg: masseSac,
-        statut_avant: sac.statut ?? 'disponible',
-      })
-      idsDejaForcees.add(sac.id)
-      masseRestante -= taken
-    }
+  for (const f of sacsForces) {
+    if (!f.sacId || idsDejaForcees.has(f.sacId)) continue
+    const sac = sacsDispo.find(s => s.id === f.sacId)
+    if (!sac) continue
+    const masseSac = sac.masse_kg ?? 0
+    if (masseSac <= 0) continue
+    const demande = parseFloat(f.taken)
+    const taken = (!demande || demande <= 0) ? masseSac : Math.min(demande, masseSac)
+    selectionForcee.push({
+      sac,
+      mp: effectiveMp(mpsMap[sac.mp_id], sac.composition_override),
+      taken,
+      partial: taken < masseSac,
+      forced: true,
+      masse_avant_kg: masseSac,
+      statut_avant: sac.statut ?? 'disponible',
+    })
+    idsDejaForcees.add(sac.id)
   }
 
   const masseDejaCouverte = selectionForcee.reduce((s, f) => s + f.taken, 0)
@@ -308,7 +304,8 @@ export default function Optimiseur() {
   const [rcId, setRcId] = useState('')
   const [masseCible, setMasseCible] = useState(5000)
   const [nomBatch, setNomBatch] = useState('')
-  const [mpsForcees, setMpsForcees] = useState([])
+  // sacsForces : [{ mpFiltre, sacId, taken }] — sacs précis imposés (masse partielle possible)
+  const [sacsForces, setSacsForces] = useState([])
   const [restrictions, setRestrictions] = useState([])
 
   const [propositions, setPropositions] = useState([])
@@ -324,12 +321,12 @@ export default function Optimiseur() {
     const prefill = localStorage.getItem('optimiseur_prefill')
     if (prefill) {
       try {
-        const { recetteId, masse, nom, mpsForcees: pf, restrictions: pr } = JSON.parse(prefill)
+        const { recetteId, masse, nom, sacsForces: sf, restrictions: pr } = JSON.parse(prefill)
         if (recetteId) setRcId(recetteId)
         if (masse) setMasseCible(masse)
         if (nom) setNomBatch(nom)
-        // Retrouver les MP imposées et restrictions du batch d'origine
-        if (Array.isArray(pf) && pf.length) setMpsForcees(pf)
+        // Retrouver les sacs imposés et restrictions du batch d'origine
+        if (Array.isArray(sf) && sf.length) setSacsForces(sf)
         if (Array.isArray(pr) && pr.length) setRestrictions(pr)
         localStorage.removeItem('optimiseur_prefill')
         setPrefillPending(true)
@@ -372,21 +369,39 @@ export default function Optimiseur() {
   function supprimerRestriction(i) {
     setRestrictions(prev => prev.filter((_, idx) => idx !== i))
   }
-  function ajouterMpForcee() {
-    setMpsForcees(prev => [...prev, { mpId: mpsListe[0]?.id ?? '', masse: 500 }])
+  function ajouterSacForce() {
+    setSacsForces(prev => [...prev, { mpFiltre: '', sacId: '', taken: '' }])
   }
-  function majMpForcee(i, field, value) {
-    setMpsForcees(prev => prev.map((f, idx) => idx === i ? { ...f, [field]: value } : f))
+  function majSacForce(i, field, value) {
+    setSacsForces(prev => prev.map((f, idx) => {
+      if (idx !== i) return f
+      if (field === 'mpFiltre') return { mpFiltre: value, sacId: '', taken: '' } // reset sac au changement de matière
+      if (field === 'sacId') {
+        const sac = sacs.find(s => s.id === value)
+        return { ...f, sacId: value, taken: sac ? String(Math.round(sac.masse_kg ?? 0)) : '' }
+      }
+      return { ...f, [field]: value }
+    }))
   }
-  function supprimerMpForcee(i) {
-    setMpsForcees(prev => prev.filter((_, idx) => idx !== i))
+  function supprimerSacForce(i) {
+    setSacsForces(prev => prev.filter((_, idx) => idx !== i))
+  }
+  function labelSacOpt(sac) {
+    const ref = sac.reference || (sac.numero_lot_fournisseur ? `N°${sac.numero_lot_fournisseur}` : sac.id.slice(0, 8))
+    const part = sac.statut === 'partiel' ? ' · partiel' : ''
+    const emp = sac.emplacement ? ` · 📍${sac.emplacement}` : ''
+    return `${ref} — ${Math.round(sac.masse_kg ?? 0)} kg${sac.fournisseur ? ' · ' + sac.fournisseur : ''}${part}${emp}`
   }
 
   function lancer() {
     setSaved(false)
     const recette = recettes.find(r => r.id === rcId)
     if (!recette) return
-    const seed = Math.floor(Math.random() * 100000)
+    // Seed DÉTERMINISTE basé sur le rang de la proposition : la 1ʳᵉ (seed 0) ne
+    // perturbe pas le score → résultat 100% reproductible pour un stock donné.
+    // Les variantes suivantes ("Nouvelle proposition") = seed 1, 2, 3… toujours
+    // reproductibles mais différentes entre elles.
+    const seed = propIndex + 1
 
     // Autorisation par famille : une MP autorisée pour RC001 l'est aussi pour RC001_v2
     const recetteIdsOk = new Set([rcId, recette.parent_recette_id].filter(Boolean))
@@ -411,22 +426,23 @@ export default function Optimiseur() {
         })
       }
     }
-    const sel = optimiser(sacsFiltrés, mpsMap, recette, masseCible, mpsForcees, seed, rcId)
+    const sacsForcesValides = sacsForces.filter(f => f.sacId)
+    const sel = optimiser(sacsFiltrés, mpsMap, recette, masseCible, sacsForcesValides, seed, rcId)
 
-    // Avertir si une MP imposée n'a pas pu être couverte par le stock disponible
-    // (sinon la masse est silencieusement plafonnée → écart de poids inexpliqué)
+    // Avertir si un sac imposé n'a pas pu être pris à la masse demandée
     const warns = []
-    for (const f of mpsForcees) {
-      if (!f.mpId || parseFloat(f.masse) <= 0) continue
-      const demande = parseFloat(f.masse)
-      const pris = sel.filter(s => s.forced && s.sac.mp_id === f.mpId).reduce((a, s) => a + s.taken, 0)
+    for (const f of sacsForcesValides) {
+      const demande = parseFloat(f.taken)
+      if (!demande || demande <= 0) continue
+      const pris = sel.filter(s => s.forced && s.sac.id === f.sacId).reduce((a, s) => a + s.taken, 0)
       if (pris < demande - 0.5) {
-        const mp = mpsMap[f.mpId]
-        warns.push(`• ${mp?.nom ?? f.mpId} : ${Math.round(demande)} kg demandés, seulement ${Math.round(pris)} kg disponibles en stock`)
+        const sac = sacs.find(s => s.id === f.sacId)
+        const nom = mpsMap[sac?.mp_id]?.nom ?? sac?.reference ?? f.sacId
+        warns.push(`• ${nom} : ${Math.round(demande)} kg demandés, seulement ${Math.round(pris)} kg disponibles dans ce sac`)
       }
     }
     if (warns.length) {
-      alert(`⚠ Matières imposées non couvertes par le stock :\n\n${warns.join('\n')}\n\nLa proposition utilise ce qui est disponible — le poids total sera donc inférieur à la cible. Ajoutez des sacs en stock ou réduisez la quantité imposée.`)
+      alert(`⚠ Sacs imposés non couverts :\n\n${warns.join('\n')}\n\nLa proposition utilise ce qui est disponible dans le sac.`)
     }
 
     const nouvellesProps = [...propositions.slice(0, propIndex + 1), sel]
@@ -460,9 +476,9 @@ export default function Optimiseur() {
       cout_total_eur: Math.round(coutTotal),
       cout_par_tonne_eur: Math.round(coutParTonne),
     }
-    // Mémoriser MP imposées / restrictions pour un futur "Repasser en optimiseur"
-    if (mpsForcees.length > 0 || restrictions.length > 0) {
-      batch.optimiseur_params = { mpsForcees, restrictions }
+    // Mémoriser sacs imposés / restrictions pour un futur "Repasser en optimiseur"
+    if (sacsForces.length > 0 || restrictions.length > 0) {
+      batch.optimiseur_params = { sacsForces: sacsForces.filter(f => f.sacId), restrictions }
     }
     const lignes = selection.map((s, i) => {
       const ligne = lignePourSac(s.sac, s.taken, i)
@@ -493,8 +509,9 @@ export default function Optimiseur() {
     setPropositions([])
     setPropIndex(-1)
     setNomBatch('')
-    setMpsForcees([])
+    setSacsForces([])
     setRestrictions([])
+    localStorage.removeItem('optimiseur_brouillon')
     fetchAll()
   }
 
@@ -556,34 +573,57 @@ export default function Optimiseur() {
 
         <div className="mb-4">
           <div className="flex items-center justify-between mb-2">
-            <p className="text-xs font-medium text-gray-700">Matières imposées <span className="text-gray-400 font-normal">(optionnel — l'algo optimise le reste)</span></p>
-            <button onClick={ajouterMpForcee} className="text-xs px-2 py-1 border border-gray-200 rounded hover:bg-gray-50">
+            <p className="text-xs font-medium text-gray-700">Sacs imposés <span className="text-gray-400 font-normal">(optionnel — choisissez des sacs précis, l'algo optimise le reste)</span></p>
+            <button onClick={ajouterSacForce} className="text-xs px-2 py-1 border border-gray-200 rounded hover:bg-gray-50">
               + Ajouter
             </button>
           </div>
-          {mpsForcees.length === 0 && (
-            <p className="text-xs text-gray-400 italic">Aucune — l'optimiseur choisit librement dans le stock</p>
+          {sacsForces.length === 0 && (
+            <p className="text-xs text-gray-400 italic">Aucun — l'optimiseur choisit librement dans le stock</p>
           )}
-          {mpsForcees.map((f, i) => (
-            <div key={i} className="flex gap-2 items-center mb-2">
-              <select
-                value={f.mpId}
-                onChange={e => majMpForcee(i, 'mpId', e.target.value)}
-                className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-gray-400"
-              >
-                {mpsListe.map(m => <option key={m.id} value={m.id}>{m.id} — {m.nom}</option>)}
-              </select>
-              <input
-                type="number" min="1"
-                value={f.masse}
-                onChange={e => majMpForcee(i, 'masse', e.target.value)}
-                placeholder="kg"
-                className="w-28 text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-gray-400"
-              />
-              <span className="text-xs text-gray-400">kg</span>
-              <button onClick={() => supprimerMpForcee(i)} className="text-red-400 hover:text-red-600 text-lg leading-none px-1">×</button>
-            </div>
-          ))}
+          {sacsForces.map((f, i) => {
+            const sacsDejaForces = new Set(sacsForces.map(x => x.sacId).filter(Boolean))
+            const sacsDeLaMatiere = sacs
+              .filter(s => (!f.mpFiltre || s.mp_id === f.mpFiltre) && (s.id === f.sacId || !sacsDejaForces.has(s.id)))
+            const sacChoisi = sacs.find(s => s.id === f.sacId)
+            return (
+              <div key={i} className="flex gap-2 items-center mb-2 flex-wrap">
+                {/* 1. Filtre matière */}
+                <select
+                  value={f.mpFiltre}
+                  onChange={e => majSacForce(i, 'mpFiltre', e.target.value)}
+                  className="text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-gray-400"
+                >
+                  <option value="">Toutes matières</option>
+                  {mpsListe.map(m => <option key={m.id} value={m.id}>{m.id} — {m.nom}</option>)}
+                </select>
+                {/* 2. Sac précis (liste des sacs de la matière) */}
+                <TooltipMp mp={sacChoisi ? effectiveMp(mpsMap[sacChoisi.mp_id], sacChoisi.composition_override) : null}>
+                  <select
+                    value={f.sacId}
+                    onChange={e => majSacForce(i, 'sacId', e.target.value)}
+                    className="flex-1 min-w-[220px] text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-gray-400"
+                  >
+                    <option value="">Choisir un sac…</option>
+                    {sacsDeLaMatiere.map(s => (
+                      <option key={s.id} value={s.id}>{mpsMap[s.mp_id]?.nom ?? s.mp_id} · {labelSacOpt(s)}</option>
+                    ))}
+                  </select>
+                </TooltipMp>
+                {/* 3. Masse à prélever (compteur kg, partiel possible) */}
+                <input
+                  type="number" min="1"
+                  value={f.taken}
+                  onChange={e => majSacForce(i, 'taken', e.target.value)}
+                  placeholder="kg"
+                  disabled={!f.sacId}
+                  className="w-24 text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-gray-400 disabled:bg-gray-50"
+                />
+                <span className="text-xs text-gray-400">kg{sacChoisi ? ` / ${Math.round(sacChoisi.masse_kg ?? 0)}` : ''}</span>
+                <button onClick={() => supprimerSacForce(i)} className="text-red-400 hover:text-red-600 text-lg leading-none px-1">×</button>
+              </div>
+            )
+          })}
         </div>
 
         <div className="mb-4">
@@ -632,7 +672,7 @@ export default function Optimiseur() {
         <div className="flex items-center gap-3 flex-wrap">
           <button
             onClick={lancer}
-            disabled={loading || (sacs.length === 0 && mpsForcees.length === 0)}
+            disabled={loading || (sacs.length === 0 && sacsForces.length === 0)}
             className="px-4 py-2 text-sm bg-gray-900 text-white rounded-lg hover:bg-gray-700 disabled:opacity-40"
           >
             ⚙ {propositions.length === 0 ? 'Composer le batch' : 'Nouvelle proposition'}
@@ -699,6 +739,7 @@ export default function Optimiseur() {
                 <tr className="border-b border-gray-50">
                   <th className="text-left px-4 py-2 text-xs font-medium text-gray-500">Réf.</th>
                   <th className="text-left px-4 py-2 text-xs font-medium text-gray-500">Matière</th>
+                  <th className="text-left px-4 py-2 text-xs font-medium text-gray-500">Emplacement</th>
                   <th className="text-right px-4 py-2 text-xs font-medium text-gray-500">Masse</th>
                   <th className="text-left px-4 py-2 text-xs font-medium text-gray-500">Note</th>
                 </tr>
@@ -710,17 +751,25 @@ export default function Optimiseur() {
                       {sac.reference || '—'}
                     </td>
                     <td className="px-4 py-3 text-gray-900">
-                      {mp?.nom ?? sac.mp_id}
+                      <TooltipMp mp={mp}>
+                        <span className="cursor-default">{mp?.nom ?? sac.mp_id}</span>
+                      </TooltipMp>
                       {sac.numero_lot_fournisseur && (
                         <span className="ml-2 text-xs text-gray-400">N°{sac.numero_lot_fournisseur}</span>
                       )}
                     </td>
+                    <td className="px-4 py-3 text-xs text-gray-500">
+                      {sac.emplacement ? <span>📍 {sac.emplacement}</span> : '—'}
+                    </td>
                     <td className="px-4 py-3 text-right font-semibold tabular-nums">
                       {Math.round(taken).toLocaleString('fr-FR')} kg
+                      {partial && <span className="block text-xs font-normal text-amber-600">sur {Math.round(sac.masse_kg ?? 0)} kg du sac</span>}
                     </td>
-                    <td className="px-4 py-3 flex gap-1 flex-wrap">
-                      {forced && <span className="text-xs text-blue-600 bg-blue-100 px-2 py-0.5 rounded">Imposé</span>}
-                      {partial && <span className="text-xs text-amber-600 bg-amber-50 px-2 py-0.5 rounded">Partiel</span>}
+                    <td className="px-4 py-3">
+                      <div className="flex gap-1 flex-wrap">
+                        {forced && <span className="text-xs text-blue-600 bg-blue-100 px-2 py-0.5 rounded">Imposé</span>}
+                        {partial && <span className="text-xs text-amber-700 bg-amber-100 px-2 py-0.5 rounded font-medium">⚠ Sac partiel</span>}
+                      </div>
                     </td>
                   </tr>
                 ))}

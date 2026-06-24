@@ -23,6 +23,7 @@ export function lignePourSac(sac, taken, ordre) {
       reference: sac.reference ?? null,
       fournisseur: sac.fournisseur ?? null,
       numero_lot_fournisseur: sac.numero_lot_fournisseur ?? null,
+      emplacement: sac.emplacement ?? null,
     }],
     // Fige la composition effective du sac pour que l'historique reste juste
     composition_snapshot: sac.composition_override ?? null,

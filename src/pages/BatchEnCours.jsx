@@ -105,12 +105,12 @@ export default function BatchEnCours() {
     await supabase.from('batch_consommations').delete().eq('batch_id', batch.id)
     await supabase.from('batch_lignes').delete().eq('batch_id', batch.id)
     await supabase.from('batches').delete().eq('id', batch.id)
-    // Restituer aussi les MP imposées / restrictions mémorisées à la création
+    // Restituer aussi les sacs imposés / restrictions mémorisés à la création
     localStorage.setItem('optimiseur_prefill', JSON.stringify({
       recetteId: batch.recette_id,
       masse: Math.round(masseTotaleBatch(batch)),
       nom: batch.nom,
-      mpsForcees: batch.optimiseur_params?.mpsForcees ?? [],
+      sacsForces: batch.optimiseur_params?.sacsForces ?? [],
       restrictions: batch.optimiseur_params?.restrictions ?? [],
     }))
     navigate('/optimiseur')
@@ -503,6 +503,7 @@ export default function BatchEnCours() {
         reference:              sacEntry?.reference              ?? fromMap?.reference              ?? null,
         fournisseur:            sacEntry?.fournisseur            ?? fromMap?.fournisseur            ?? null,
         numero_lot_fournisseur: sacEntry?.numero_lot_fournisseur ?? fromMap?.numero_lot_fournisseur ?? null,
+        emplacement:            sacEntry?.emplacement            ?? fromMap?.emplacement            ?? null,
       }
     }
 
@@ -516,6 +517,9 @@ export default function BatchEnCours() {
         sacsHtml = sacsConsommes.map((sc, i) => {
           const info = sacInfo(sc)
           const masse = Math.round(sc.masse_prise ?? 0)
+          // Sac partiel : on ne prélève qu'une partie du big bag → à signaler clairement
+          const masseSac = Math.round(sc.masse_avant_kg ?? 0)
+          const estPartiel = masseSac > 0 && masse < masseSac - 0.5
           // Priorité d'affichage : N° lot fournisseur (lisible sur le big bag)
           const idPrincipal = info.numero_lot_fournisseur
             ? `<strong>N°lot ${esc(info.numero_lot_fournisseur)}</strong>`
@@ -523,9 +527,16 @@ export default function BatchEnCours() {
           const meta = []
           if (info.fournisseur) meta.push(esc(info.fournisseur))
           if (info.numero_lot_fournisseur && info.reference) meta.push(`réf. ${esc(info.reference)}`)
+          if (info.emplacement) meta.push(`📍 ${esc(info.emplacement)}`)
           const metaStr = meta.length ? ` <span style="color:#999;">· ${meta.join(' · ')}</span>` : ''
-          return `<div style="padding:3px 0 3px 10px;border-left:2px solid #ddd;margin:2px 0;">
-            ${idPrincipal}${metaStr} — <strong>${masse} kg</strong>
+          const partielBadge = estPartiel
+            ? ` <span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:4px;font-weight:700;font-size:11px;">⚠ PARTIEL — prélever ${masse} kg sur ${masseSac} kg</span>`
+            : ''
+          const masseStr = estPartiel
+            ? `<strong>${masse} kg</strong> <span style="color:#999;">(sac de ${masseSac} kg)</span>`
+            : `<strong>${masse} kg</strong>`
+          return `<div style="padding:3px 0 3px 10px;border-left:2px solid ${estPartiel ? '#f59e0b' : '#ddd'};margin:2px 0;">
+            ${idPrincipal}${metaStr} — ${masseStr}${partielBadge}
           </div>`
         }).join('')
       } else {

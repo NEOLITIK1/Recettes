@@ -1,4 +1,4 @@
--- NEOLITIK — Schéma Supabase complet (consolidé : inclut migrations v6 à v9)
+-- NEOLITIK — Schéma Supabase complet (consolidé : inclut migrations v6 à v10)
 -- Installation neuve : coller ce seul fichier dans Supabase > SQL Editor > New query > Run
 -- Base existante : exécuter uniquement les migration-vX.sql manquants
 
@@ -56,8 +56,18 @@ create table if not exists sacs (
   fournisseur text,
   numero_lot_fournisseur text,
   date_reception date,
+  emplacement text,
   created_at timestamptz default now(),
   updated_at timestamptz default now()
+);
+
+-- Catégories de stock paramétrables (vue "par matière")
+create table if not exists stock_categories (
+  id uuid primary key default gen_random_uuid(),
+  nom text not null,
+  ordre integer default 0,
+  conditions jsonb default '[]'::jsonb,
+  created_at timestamptz default now()
 );
 
 -- 4. Batchs
@@ -122,7 +132,7 @@ alter table batch_consommations enable row level security;
 do $$
 declare t text;
 begin
-  foreach t in array array['matieres_premieres','recettes_cibles','sacs','batches','batch_lignes','batch_consommations'] loop
+  foreach t in array array['matieres_premieres','recettes_cibles','sacs','batches','batch_lignes','batch_consommations','stock_categories'] loop
     if not exists (select 1 from pg_policies where tablename = t and policyname = 'public_all') then
       execute format('create policy "public_all" on %I for all using (true) with check (true)', t);
     end if;

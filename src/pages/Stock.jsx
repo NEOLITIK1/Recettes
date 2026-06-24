@@ -28,6 +28,7 @@ const EMPTY_FORM = {
   fournisseur: '',
   numero_lot_fournisseur: '',
   date_reception: '',
+  emplacement: '',
   composition_override: null,
 }
 
@@ -90,6 +91,7 @@ export default function Stock() {
       fournisseur: sac.fournisseur ?? '',
       numero_lot_fournisseur: sac.numero_lot_fournisseur ?? '',
       date_reception: sac.date_reception ?? '',
+      emplacement: sac.emplacement ?? '',
       composition_override: sac.composition_override ?? null,
     })
     setEditId(sac.id)
@@ -107,6 +109,7 @@ export default function Stock() {
       fournisseur: form.fournisseur || null,
       numero_lot_fournisseur: form.numero_lot_fournisseur || null,
       date_reception: form.date_reception || null,
+      emplacement: form.emplacement || null,
       composition_override: showCompoOverride ? form.composition_override : null,
     }
     const { error } = editId
@@ -241,6 +244,7 @@ export default function Stock() {
                 <th className="text-left px-4 py-3 text-xs font-medium text-gray-500">Référence</th>
                 <th className="text-left px-4 py-3 text-xs font-medium text-gray-500">Matière</th>
                 <th className="text-left px-4 py-3 text-xs font-medium text-gray-500">Fournisseur / lot</th>
+                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500">Emplacement</th>
                 <th className="text-right px-4 py-3 text-xs font-medium text-gray-500">Masse</th>
                 <th className="text-left px-4 py-3 text-xs font-medium text-gray-500">Statut</th>
                 <th className="px-4 py-3"></th>
@@ -274,6 +278,7 @@ export default function Stock() {
                         </>
                       ) : '—'}
                     </td>
+                    <td className="px-4 py-3 text-xs text-gray-500">{sac.emplacement ? <span>📍 {sac.emplacement}</span> : '—'}</td>
                     <td className="px-4 py-3 text-right font-semibold tabular-nums">{Math.round(sac.masse_kg).toLocaleString('fr-FR')} kg</td>
                     <td className="px-4 py-3">
                       <span className={`px-2 py-0.5 rounded text-xs font-medium ${STATUT_STYLES[sac.statut]}`}>
@@ -367,6 +372,11 @@ export default function Stock() {
                 <label className="block text-xs text-gray-500 mb-1">Date de réception</label>
                 <input type="date" value={form.date_reception} onChange={e => setForm(p => ({...p, date_reception: e.target.value}))}
                   className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2" />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Emplacement <span className="text-gray-400">(travée, coin atelier…)</span></label>
+                <input value={form.emplacement} onChange={e => setForm(p => ({...p, emplacement: e.target.value}))}
+                  placeholder="ex: Travée B3" className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2" />
               </div>
             </div>
           </div>
