@@ -443,7 +443,9 @@ export default function Historique() {
                 </div>
               </div>
               <div>
-                <label className="block text-xs text-gray-500 mb-1">Recette</label>
+                <label className="block text-xs text-gray-500 mb-1">
+                  Recette (étiquette) <span className="text-gray-400 font-normal">— détermine le tonnage par recette dans les stats</span>
+                </label>
                 <select value={editForm.recette_id} onChange={e => setEditForm(f => ({ ...f, recette_id: e.target.value }))}
                   className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2">
                   <option value="">— Aucune —</option>
