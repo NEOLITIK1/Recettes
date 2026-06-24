@@ -512,7 +512,7 @@ export default function Optimiseur() {
       batch.optimiseur_params = { sacsForces: sacsForces.filter(f => f.sacId), restrictions }
     }
     const lignes = selection.map((s, i) => {
-      const ligne = lignePourSac(s.sac, s.taken, i)
+      const ligne = lignePourSac(s.sac, s.taken, i, s.mp)
       // L'algo a annoté l'état initial du sac (avant prélèvements multi-passes)
       ligne.sacs_consommes[0].masse_avant_kg = s.masse_avant_kg ?? (s.sac.masse_kg ?? 0)
       ligne.sacs_consommes[0].statut_avant = s.statut_avant ?? 'disponible'

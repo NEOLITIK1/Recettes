@@ -31,6 +31,10 @@ export default function BatchEnCours() {
   // Modal suppression
   const [modalSuppr, setModalSuppr] = useState(null) // batch
 
+  // Modal récupération du batch en stock (batch pollué/déclassé → nouvelle MP réutilisable)
+  const [modalRecup, setModalRecup] = useState(null) // batch
+  const [recupForm, setRecupForm] = useState({ nom: '', masse: '', recettes: [] })
+
   // Modal édition masse d'une ligne (correction opérateur sans repasser par l'optimiseur)
   const [modalEditLigne, setModalEditLigne] = useState(null) // ligne
   const [editMasse, setEditMasse] = useState('')
@@ -275,7 +279,7 @@ export default function BatchEnCours() {
     if (err) { fetchAll(); return }
 
     // 4. Réécrire la ligne avec le nouveau sac (mp_id, snapshot, composition)
-    const nl = lignePourSac(nouveauSac, masse, ligne.ordre ?? 0)
+    const nl = lignePourSac(nouveauSac, masse, ligne.ordre ?? 0, effectiveMp(mpsMap[nouveauSac.mp_id], nouveauSac.composition_override))
     const { error: lErr } = await supabase.from('batch_lignes').update({
       mp_id: nl.mp_id,
       masse_totale_kg: nl.masse_totale_kg,
@@ -288,6 +292,63 @@ export default function BatchEnCours() {
     setModalSubst(null)
     setSubstSacId('')
     setSubstMasse('')
+    fetchAll()
+  }
+
+  // ── Récupérer le batch en stock (batch pollué / déclassé) ────────────────────
+  // Tout le batch devient UNE nouvelle MP interne + un sac, avec un nom libre et
+  // des recettes autorisées choisies (ex: un Sable Éclatant pollué de noir, qu'on
+  // ne réautorise que dans les recettes Noir). Le batch est clôturé.
+  function ouvrirRecup(batch) {
+    setModalRecup(batch)
+    setRecupForm({
+      nom: `Récupéré — ${batch.nom}`,
+      masse: String(Math.round(masseTotaleBatch(batch))),
+      recettes: [],
+    })
+  }
+  async function recupererBatchEnStock() {
+    const batch = modalRecup
+    if (!batch) return
+    const masse = parseFloat(recupForm.masse)
+    if (!recupForm.nom.trim()) { alert('Donnez un nom à la matière récupérée.'); return }
+    if (!masse || masse <= 0) { alert('Masse invalide.'); return }
+    if (!recupForm.recettes.length) {
+      if (!confirm("Aucune recette autorisée sélectionnée : la matière sera utilisable dans TOUTES les recettes. Continuer ?")) return
+    }
+
+    const lignesEnrichies = batch.lignes.map(l => ({ mp: effectiveMp(mpsMap[l.mp_id], l.composition_snapshot), masse_totale_kg: l.masse_totale_kg }))
+    const comp = calcComposition(lignesEnrichies)
+    if (!comp) { alert('Composition du batch vide.'); return }
+    const coutBatch = calcCout(lignesEnrichies)
+    const masseBatch = lignesEnrichies.reduce((s, l) => s + l.masse_totale_kg, 0)
+    const coutT = masseBatch > 0 ? Math.round(coutBatch / masseBatch * 1000) : 0
+    const r1 = v => Math.round((v ?? 0) * 10) / 10
+
+    const mpId = `MP_REC_${batch.id}`
+    const { error: mpErr } = await supabase.from('matieres_premieres').upsert({
+      id: mpId,
+      nom: recupForm.nom.trim(),
+      type_appro: 'Interne',
+      description: `Batch récupéré : ${batch.nom}`,
+      cout_par_tonne: coutT,
+      pct_pp: r1(comp.pp), pct_pe: r1(comp.pe), pct_alu: r1(comp.alu),
+      pct_autres: r1(comp.autres), pct_autres_plastiques: r1(comp.autresPlast),
+      pct_blanc: r1(comp.blanc), pct_transparent: r1(comp.transp), pct_noir: r1(comp.noir),
+      pct_autres_couleurs: r1(comp.autresCoul), pct_sable: r1(comp.ecoLithe), pct_charge_minerale: r1(comp.chargeMin),
+      recettes_autorisees: recupForm.recettes,
+    }, { onConflict: 'id' })
+    if (mpErr) { alert(`Erreur : la matière récupérée n'a pas pu être créée.\n${mpErr.message}`); return }
+
+    const { error: sacErr } = await supabase.from('sacs').insert({
+      mp_id: mpId, masse_kg: masse, reference: `Récup-${batch.id}`, statut: 'disponible',
+    })
+    if (sacErr) { alert(`Erreur : le sac récupéré n'a pas pu être ajouté au stock.\n${sacErr.message}`); return }
+
+    const { error: cErr } = await supabase.from('batches').update({ statut: 'cloture' }).eq('id', batch.id)
+    if (cErr) { alert(`La matière a été créée mais le batch n'a pas pu être clôturé.\n${cErr.message}`) }
+
+    setModalRecup(null)
     fetchAll()
   }
 
@@ -341,7 +402,7 @@ export default function BatchEnCours() {
     }
 
     const lignes = selection.map(({ sac, taken }, i) => ({
-      ...lignePourSac(sac, taken, 99 + i),
+      ...lignePourSac(sac, taken, 99 + i, effectiveMp(mpsMap[sac.mp_id], sac.composition_override)),
       batch_id: modalAjout,
     }))
     const { error: lErr } = await supabase.from('batch_lignes').insert(lignes)
@@ -704,6 +765,9 @@ ${compHtml ? `<h2 style="font-size:14px;margin-bottom:8px;">Composition résulta
                     <button onClick={() => { setModalReste(batch); setResteKg('') }} className="text-xs px-3 py-1.5 border border-emerald-200 text-emerald-700 rounded-lg hover:bg-emerald-50">
                       Déclarer reste
                     </button>
+                    <button onClick={() => ouvrirRecup(batch)} title="Reclasser tout le batch en nouvelle matière réutilisable (batch pollué/déclassé)" className="text-xs px-3 py-1.5 border border-purple-200 text-purple-700 rounded-lg hover:bg-purple-50">
+                      ♻ Récupérer en stock
+                    </button>
                     <button
                       onClick={() => cloturerBatch(batch)}
                       disabled={!peutCloturer}
@@ -999,6 +1063,68 @@ ${compHtml ? `<h2 style="font-size:14px;margin-bottom:8px;">Composition résulta
               placeholder="ex: 500" className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2" />
           </div>
         </div>
+      </Modal>
+
+      {/* Modal récupération du batch en stock */}
+      <Modal
+        open={!!modalRecup}
+        onClose={() => setModalRecup(null)}
+        title={modalRecup ? `Récupérer en stock — ${modalRecup.nom}` : ''}
+        footer={
+          <>
+            <button onClick={() => setModalRecup(null)} className="px-4 py-2 text-sm border border-gray-200 rounded-lg hover:bg-gray-50">Annuler</button>
+            <button onClick={recupererBatchEnStock} className="px-4 py-2 text-sm bg-purple-700 text-white rounded-lg hover:bg-purple-800">Créer la matière + clôturer</button>
+          </>
+        }
+      >
+        {modalRecup && (
+          <div className="space-y-4">
+            <p className="text-sm text-gray-600">
+              Tout le batch devient <strong>une nouvelle matière première</strong> (avec sa composition réelle)
+              et un sac est ajouté au stock. Le batch est ensuite <strong>clôturé</strong> (passe dans l'historique).
+              Utile pour un batch pollué ou déclassé : on le reclasse pour ne l'autoriser que dans certaines recettes.
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Nom de la matière récupérée</label>
+                <input value={recupForm.nom} onChange={e => setRecupForm(f => ({ ...f, nom: e.target.value }))}
+                  className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2" />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Masse à remettre en stock (kg)</label>
+                <input type="number" min="1" value={recupForm.masse} onChange={e => setRecupForm(f => ({ ...f, masse: e.target.value }))}
+                  className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2" />
+              </div>
+            </div>
+            <div>
+              <p className="text-xs font-medium text-gray-700 mb-2">
+                Recettes autorisées <span className="text-gray-400 font-normal">(ex: ne réautoriser que dans les recettes Noir)</span>
+              </p>
+              {recettes.filter(r => !r.archivee).length === 0 ? (
+                <p className="text-xs text-gray-400 italic">Aucune recette disponible.</p>
+              ) : (
+                <div className="space-y-1.5 max-h-44 overflow-y-auto border border-gray-100 rounded-lg p-2">
+                  {recettes.filter(r => !r.archivee).map(rc => {
+                    const checked = recupForm.recettes.includes(rc.id)
+                    return (
+                      <label key={rc.id} className="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" checked={checked}
+                          onChange={() => setRecupForm(f => ({
+                            ...f,
+                            recettes: checked ? f.recettes.filter(id => id !== rc.id) : [...f.recettes, rc.id],
+                          }))}
+                          className="rounded border-gray-300 text-gray-900" />
+                        <span className="text-sm text-gray-700">{rc.nom}</span>
+                        <span className="text-xs text-gray-400">{rc.id}</span>
+                      </label>
+                    )
+                  })}
+                </div>
+              )}
+              <p className="text-xs text-gray-400 mt-1">Laissez vide pour autoriser dans toutes les recettes.</p>
+            </div>
+          </div>
+        )}
       </Modal>
 
       {/* Modal édition masse d'une ligne */}

@@ -2,12 +2,32 @@
 // Helpers composition
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Renvoie une MP "effective" : si un override existe, fusionne avec la MP
+// Champs de composition (%) figés dans les snapshots de batch
+export const PCT_FIELDS = [
+  'pct_pp', 'pct_pe', 'pct_alu', 'pct_autres', 'pct_autres_plastiques',
+  'pct_blanc', 'pct_transparent', 'pct_noir', 'pct_autres_couleurs',
+  'pct_sable', 'pct_charge_minerale',
+]
+
+// Renvoie une MP "effective" : si un override (ou un snapshot figé) existe, il prime.
 // override : objet { pct_pp, pct_pe, ... } ou null
+// Si la MP a été supprimée (mp absent) mais qu'un snapshot existe, on se rabat
+// dessus → l'historique reste juste même après suppression d'une matière.
 export function effectiveMp(mp, override) {
-  if (!mp) return mp
+  if (!mp && !override) return mp
+  if (!mp) return { ...override }
   if (!override) return mp
   return { ...mp, ...override }
+}
+
+// Extrait la composition (% uniquement) d'une MP effective, pour la figer sur une
+// ligne de batch. Garantit que l'historique ne bouge plus si la MP est modifiée
+// ou supprimée plus tard.
+export function snapshotComposition(mpEffectif) {
+  if (!mpEffectif) return null
+  const snap = {}
+  for (const f of PCT_FIELDS) snap[f] = mpEffectif[f] ?? 0
+  return snap
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

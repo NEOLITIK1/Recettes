@@ -139,7 +139,7 @@ export default function ManuelBatch() {
       cout_total_eur: Math.round(coutTotal),
       cout_par_tonne_eur: Math.round(coutParTonne),
     }
-    const lignes = selection.map(({ sac, taken }, i) => lignePourSac(sac, taken, i))
+    const lignes = selection.map(({ sac, taken }, i) => lignePourSac(sac, taken, i, effectiveMp(mpsMap[sac.mp_id], sac.composition_override)))
     const sacUpdates = selection.map(({ sac, taken }) => sacUpdatePourPrise(sac, taken))
 
     const err = await creerBatchAvecStock(batch, lignes, sacUpdates)

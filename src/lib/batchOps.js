@@ -1,4 +1,5 @@
 import { supabase } from './supabase.js'
+import { effectiveMp, snapshotComposition } from './calculs.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Opérations batch ↔ stock partagées (Optimiseur, Manuel, BatchEnCours, Historique)
@@ -8,7 +9,10 @@ import { supabase } from './supabase.js'
 
 // Construit la ligne batch pour un prélèvement sur un sac réel.
 // sac : ligne de la table sacs · taken : masse prélevée (kg) · ordre : position
-export function lignePourSac(sac, taken, ordre) {
+// mpEffectif : composition effective du sac (MP + override). Si fournie, la
+//   composition COMPLÈTE est figée → l'historique reste juste même si la MP est
+//   modifiée ou supprimée plus tard. Sinon, on fige au moins l'override du sac.
+export function lignePourSac(sac, taken, ordre, mpEffectif = null) {
   return {
     mp_id: sac.mp_id,
     masse_totale_kg: taken,
@@ -25,8 +29,10 @@ export function lignePourSac(sac, taken, ordre) {
       numero_lot_fournisseur: sac.numero_lot_fournisseur ?? null,
       emplacement: sac.emplacement ?? null,
     }],
-    // Fige la composition effective du sac pour que l'historique reste juste
-    composition_snapshot: sac.composition_override ?? null,
+    // Fige la composition (complète si mpEffectif fourni, sinon l'override seul)
+    composition_snapshot: mpEffectif
+      ? snapshotComposition(mpEffectif)
+      : (sac.composition_override ?? null),
   }
 }
 
