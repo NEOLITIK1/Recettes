@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase.js'
 import { calcComposition, calcCout, fmt1, effectiveMp, COMP_PARAMS_FULL } from '../lib/calculs.js'
 import { creerBatchAvecStock, lignePourSac, sacUpdatePourPrise } from '../lib/batchOps.js'
 import EcartBadge from '../components/EcartBadge.jsx'
+import TooltipMp from '../components/TooltipMp.jsx'
 
 export default function ManuelBatch() {
   const [recettes, setRecettes] = useState([])
@@ -17,7 +18,33 @@ export default function ManuelBatch() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
 
-  useEffect(() => { fetchAll() }, [])
+  useEffect(() => {
+    fetchAll()
+    // Restaurer un éventuel brouillon (aucun stock n'est touché tant que non validé)
+    const draft = localStorage.getItem('manuel_brouillon')
+    if (draft) {
+      try {
+        const d = JSON.parse(draft)
+        if (d.rcId) setRcId(d.rcId)
+        if (d.nomBatch) setNomBatch(d.nomBatch)
+        if (Array.isArray(d.prises)) setPrises(d.prises)
+      } catch(e) {}
+    }
+  }, [])
+
+  // Auto-sauvegarde du brouillon
+  useEffect(() => {
+    if (loading) return
+    if (prises.length === 0 && nomBatch.trim() === '') return
+    localStorage.setItem('manuel_brouillon', JSON.stringify({ rcId, nomBatch, prises }))
+  }, [rcId, nomBatch, prises, loading])
+
+  function effacerBrouillon() {
+    if (!confirm('Effacer le brouillon en cours ? Les prélèvements seront réinitialisés.')) return
+    localStorage.removeItem('manuel_brouillon')
+    setPrises([])
+    setNomBatch('')
+  }
 
   async function fetchAll() {
     setLoading(true)
@@ -31,7 +58,7 @@ export default function ManuelBatch() {
     const map = {}
     for (const mp of (mpsData ?? [])) map[mp.id] = mp
     setMpsMap(map)
-    if (rc?.length) setRcId(rc[0].id)
+    if (rc?.length && !rcId) setRcId(rc[0].id)
     setLoading(false)
   }
 
@@ -124,6 +151,7 @@ export default function ManuelBatch() {
     setSaved(true)
     setPrises([])
     setNomBatch('')
+    localStorage.removeItem('manuel_brouillon')
     fetchAll()
   }
 
@@ -174,16 +202,18 @@ export default function ManuelBatch() {
             const depasse = sac && taken > (sac.masse_kg ?? 0) + 0.5
             return (
               <div key={i} className="flex gap-2 items-center flex-wrap border border-gray-100 rounded-lg p-2 bg-gray-50">
-                <select
-                  value={p.sacId}
-                  onChange={e => majPrise(i, 'sacId', e.target.value)}
-                  className="flex-1 min-w-[280px] text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:border-gray-400"
-                >
-                  <option value="">Sélectionner un sac…</option>
-                  {sacs
-                    .filter(s => s.id === p.sacId || !sacsDejaPris.has(s.id))
-                    .map(s => <option key={s.id} value={s.id}>{labelSac(s)}</option>)}
-                </select>
+                <TooltipMp mp={sac ? effectiveMp(mpsMap[sac.mp_id], sac.composition_override) : null}>
+                  <select
+                    value={p.sacId}
+                    onChange={e => majPrise(i, 'sacId', e.target.value)}
+                    className="flex-1 min-w-[280px] text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:border-gray-400"
+                  >
+                    <option value="">Sélectionner un sac…</option>
+                    {sacs
+                      .filter(s => s.id === p.sacId || !sacsDejaPris.has(s.id))
+                      .map(s => <option key={s.id} value={s.id}>{labelSac(s)}</option>)}
+                  </select>
+                </TooltipMp>
                 <input
                   type="number" min="1"
                   value={p.taken}
@@ -208,6 +238,12 @@ export default function ManuelBatch() {
           </button>
           {sacs.length === 0 && !loading && (
             <p className="text-xs text-amber-600">Aucun sac disponible — ajoutez des sacs dans Stock.</p>
+          )}
+          {(prises.length > 0 || nomBatch.trim() !== '') && (
+            <span className="text-xs text-gray-400 ml-auto flex items-center gap-2">
+              💾 Brouillon auto-sauvegardé
+              <button onClick={effacerBrouillon} className="px-2 py-1 border border-gray-200 rounded hover:bg-gray-50 text-gray-500">Effacer</button>
+            </span>
           )}
           {selection.length > 0 && (
             <span className="text-xs text-gray-500 ml-1">

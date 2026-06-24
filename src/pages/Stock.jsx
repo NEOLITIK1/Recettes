@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase.js'
+import { effectiveMp } from '../lib/calculs.js'
 import Modal from '../components/Modal.jsx'
 import TooltipMp from '../components/TooltipMp.jsx'
 
@@ -258,7 +259,7 @@ export default function Stock() {
                     <td className="px-4 py-3 font-mono text-xs text-gray-400">{sac.reference || '—'}</td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
-                        <TooltipMp mp={mpById[sac.mp_id]}>
+                        <TooltipMp mp={effectiveMp(mpById[sac.mp_id], sac.composition_override)}>
                           <span className="text-gray-900 cursor-default">{getMpNom(sac.mp_id)}</span>
                         </TooltipMp>
                         {sac.composition_override && (

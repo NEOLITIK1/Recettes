@@ -5,6 +5,7 @@ import { calcComposition, calcCout, fmt1, effectiveMp, COMP_PARAMS_FULL, ratioPr
 import { restaurerSacsConsommes, lignesRestaurables, lignePourSac, sacUpdatePourPrise } from '../lib/batchOps.js'
 import EcartBadge from '../components/EcartBadge.jsx'
 import Modal from '../components/Modal.jsx'
+import TooltipMp from '../components/TooltipMp.jsx'
 
 export default function BatchEnCours() {
   const [batches, setBatches] = useState([])
@@ -783,11 +784,15 @@ ${compHtml ? `<h2 style="font-size:14px;margin-bottom:8px;">Composition résulta
                       const lotInfo = sc.length === 1
                         ? (sc[0].numero_lot_fournisseur ? `N°lot ${sc[0].numero_lot_fournisseur}` : sc[0].reference)
                         : null
+                      const empl = sc.length === 1 ? (sc[0].emplacement ?? sacsMap[sc[0].sac_id]?.emplacement) : null
                       return (
                       <tr key={l.id} className="hover:bg-gray-50">
                         <td className="px-4 py-3 text-gray-900">
-                          {mpsMap[l.mp_id]?.nom ?? l.mp_id}
+                          <TooltipMp mp={effectiveMp(mpsMap[l.mp_id], l.composition_snapshot)}>
+                            <span className="cursor-default">{mpsMap[l.mp_id]?.nom ?? l.mp_id}</span>
+                          </TooltipMp>
                           {lotInfo && <span className="ml-2 text-xs text-gray-400">{lotInfo}</span>}
+                          {empl && <span className="ml-2 text-xs text-gray-400">📍 {empl}</span>}
                         </td>
                         <td className="px-4 py-3 text-right font-semibold tabular-nums">{Math.round(l.masse_totale_kg).toLocaleString('fr-FR')} kg</td>
                         <td className="px-4 py-3">
@@ -890,16 +895,18 @@ ${compHtml ? `<h2 style="font-size:14px;margin-bottom:8px;">Composition résulta
             const dejaPris = new Set(ajoutPrises.map(x => x.sacId).filter(Boolean))
             return (
               <div key={i} className="flex gap-2 items-center flex-wrap">
-                <select
-                  value={p.sacId}
-                  onChange={e => majAjoutPrise(i, 'sacId', e.target.value)}
-                  className="flex-1 min-w-[220px] text-sm border border-gray-200 rounded-lg px-3 py-2"
-                >
-                  <option value="">Sélectionner un sac…</option>
-                  {sacsStock
-                    .filter(s => s.id === p.sacId || !dejaPris.has(s.id))
-                    .map(s => <option key={s.id} value={s.id}>{labelSacStock(s)}</option>)}
-                </select>
+                <TooltipMp mp={sac ? effectiveMp(mpsMap[sac.mp_id], sac.composition_override) : null}>
+                  <select
+                    value={p.sacId}
+                    onChange={e => majAjoutPrise(i, 'sacId', e.target.value)}
+                    className="flex-1 min-w-[220px] text-sm border border-gray-200 rounded-lg px-3 py-2"
+                  >
+                    <option value="">Sélectionner un sac…</option>
+                    {sacsStock
+                      .filter(s => s.id === p.sacId || !dejaPris.has(s.id))
+                      .map(s => <option key={s.id} value={s.id}>{labelSacStock(s)}</option>)}
+                  </select>
+                </TooltipMp>
                 <input
                   type="number" min="1"
                   value={p.taken}
@@ -1105,14 +1112,16 @@ ${compHtml ? `<h2 style="font-size:14px;margin-bottom:8px;">Composition résulta
               )}
               <div>
                 <label className="block text-xs text-gray-500 mb-1">Sac de remplacement</label>
-                <select value={substSacId} onChange={e => {
-                  const s = sacsStockById[e.target.value]
-                  setSubstSacId(e.target.value)
-                  if (s) setSubstMasse(String(Math.round(Math.min(s.masse_kg ?? 0, modalSubst.masse_totale_kg ?? 0))))
-                }} className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2">
-                  <option value="">Sélectionner un sac…</option>
-                  {sacsStock.map(s => <option key={s.id} value={s.id}>{labelSacStock(s)}</option>)}
-                </select>
+                <TooltipMp mp={nouveauSac ? effectiveMp(mpsMap[nouveauSac.mp_id], nouveauSac.composition_override) : null}>
+                  <select value={substSacId} onChange={e => {
+                    const s = sacsStockById[e.target.value]
+                    setSubstSacId(e.target.value)
+                    if (s) setSubstMasse(String(Math.round(Math.min(s.masse_kg ?? 0, modalSubst.masse_totale_kg ?? 0))))
+                  }} className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2">
+                    <option value="">Sélectionner un sac…</option>
+                    {sacsStock.map(s => <option key={s.id} value={s.id}>{labelSacStock(s)}</option>)}
+                  </select>
+                </TooltipMp>
               </div>
               <div>
                 <label className="block text-xs text-gray-500 mb-1">Masse à prélever (kg)</label>

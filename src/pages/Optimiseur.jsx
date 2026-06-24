@@ -331,8 +331,39 @@ export default function Optimiseur() {
         localStorage.removeItem('optimiseur_prefill')
         setPrefillPending(true)
       } catch(e) {}
+    } else {
+      // Pas de prefill : restaurer un éventuel brouillon (sans toucher au stock)
+      const draft = localStorage.getItem('optimiseur_brouillon')
+      if (draft) {
+        try {
+          const d = JSON.parse(draft)
+          if (d.rcId) setRcId(d.rcId)
+          if (d.masseCible) setMasseCible(d.masseCible)
+          if (d.nomBatch) setNomBatch(d.nomBatch)
+          if (Array.isArray(d.sacsForces)) setSacsForces(d.sacsForces)
+          if (Array.isArray(d.restrictions)) setRestrictions(d.restrictions)
+        } catch(e) {}
+      }
     }
   }, [])
+
+  // Auto-sauvegarde du brouillon (le stock n'est décrémenté qu'à la validation)
+  useEffect(() => {
+    if (loading) return
+    const aDuContenu = sacsForces.length > 0 || restrictions.length > 0 || nomBatch.trim() !== ''
+    if (!aDuContenu) return
+    localStorage.setItem('optimiseur_brouillon', JSON.stringify({ rcId, masseCible, nomBatch, sacsForces, restrictions }))
+  }, [rcId, masseCible, nomBatch, sacsForces, restrictions, loading])
+
+  function effacerBrouillon() {
+    if (!confirm('Effacer le brouillon en cours ? Les sacs imposés et restrictions seront réinitialisés.')) return
+    localStorage.removeItem('optimiseur_brouillon')
+    setNomBatch('')
+    setSacsForces([])
+    setRestrictions([])
+    setPropositions([])
+    setPropIndex(-1)
+  }
 
   useEffect(() => {
     if (prefillPending && recettes.length > 0 && sacs.length > 0) {
@@ -697,6 +728,14 @@ export default function Optimiseur() {
                 title="Proposition suivante"
               >
                 Suivante →
+              </button>
+            </div>
+          )}
+          {(sacsForces.length > 0 || restrictions.length > 0 || nomBatch.trim() !== '') && (
+            <div className="flex items-center gap-2 ml-auto">
+              <span className="text-xs text-gray-400">💾 Brouillon auto-sauvegardé</span>
+              <button onClick={effacerBrouillon} className="text-xs px-2 py-1 border border-gray-200 rounded hover:bg-gray-50 text-gray-500">
+                Effacer le brouillon
               </button>
             </div>
           )}
