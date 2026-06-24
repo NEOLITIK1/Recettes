@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase.js'
 import { BATCHES } from '../data/seed.js'
-import { calcComposition, calcCout, fmt1, effectiveMp, COMP_PARAMS_FULL } from '../lib/calculs.js'
+import { calcComposition, calcCout, fmt1, effectiveMp, COMP_PARAMS_FULL, snapshotComposition } from '../lib/calculs.js'
 import { restaurerSacsConsommes } from '../lib/batchOps.js'
 import EcartBadge from '../components/EcartBadge.jsx'
 import Modal from '../components/Modal.jsx'
@@ -16,6 +16,11 @@ export default function Historique() {
   const [savingNote, setSavingNote] = useState(false)
   const [seeded, setSeeded] = useState(false)
   const [modalSuppr, setModalSuppr] = useState(null) // batch à supprimer
+
+  // Modal édition d'un batch d'historique (corriger nom / recette / matières)
+  const [modalEdit, setModalEdit] = useState(null) // batch
+  const [editForm, setEditForm] = useState({ nom: '', recette_id: '', date_creation: '', lignes: [] })
+  const [savingEdit, setSavingEdit] = useState(false)
 
   useEffect(() => { fetchAll() }, [])
 
@@ -112,6 +117,71 @@ export default function Historique() {
       alert(`Erreur : le batch n'a pas pu être rouvert.\n${error.message}`)
       return
     }
+    fetchAll()
+  }
+
+  // ── Édition d'un batch d'historique (corriger une erreur de saisie) ──────────
+  function ouvrirEdit(batch) {
+    setModalEdit(batch)
+    setEditForm({
+      nom: batch.nom ?? '',
+      recette_id: batch.recette_id ?? '',
+      date_creation: batch.date_creation ?? '',
+      lignes: batch.lignes.map(l => ({ id: l.id, mp_id: l.mp_id, masse: String(Math.round(l.masse_totale_kg ?? 0)) })),
+    })
+  }
+  function majEditLigne(i, field, val) {
+    setEditForm(f => ({ ...f, lignes: f.lignes.map((l, idx) => idx === i ? { ...l, [field]: val } : l) }))
+  }
+  function ajouterEditLigne() {
+    setEditForm(f => ({ ...f, lignes: [...f.lignes, { mp_id: '', masse: '' }] }))
+  }
+  function supprimerEditLigne(i) {
+    setEditForm(f => ({ ...f, lignes: f.lignes.filter((_, idx) => idx !== i) }))
+  }
+  async function saveEdit() {
+    const batch = modalEdit
+    if (!batch) return
+    if (!editForm.nom.trim()) { alert('Le nom est obligatoire.'); return }
+    setSavingEdit(true)
+
+    // 1. En-tête : nom, recette, date
+    const { error: bErr } = await supabase.from('batches').update({
+      nom: editForm.nom.trim(),
+      recette_id: editForm.recette_id || null,
+      date_creation: editForm.date_creation || null,
+    }).eq('id', batch.id)
+    if (bErr) { setSavingEdit(false); alert(`Erreur lors de la mise à jour du batch.\n${bErr.message}`); return }
+
+    // 2. Lignes : réconciliation (sans toucher au stock — le batch est déjà consommé)
+    const lignesEditees = editForm.lignes
+      .map(l => ({ ...l, masseNum: parseFloat(l.masse) || 0 }))
+      .filter(l => l.mp_id && l.masseNum > 0)
+    const idsGardes = new Set(lignesEditees.filter(l => l.id).map(l => l.id))
+    for (const l of batch.lignes) {
+      if (!idsGardes.has(l.id)) await supabase.from('batch_lignes').delete().eq('id', l.id)
+    }
+    for (let i = 0; i < lignesEditees.length; i++) {
+      const l = lignesEditees[i]
+      const orig = batch.lignes.find(x => x.id === l.id)
+      // Si la matière change (ou ligne nouvelle), figer la composition de la nouvelle MP
+      const mpChange = !orig || orig.mp_id !== l.mp_id
+      const snapshot = mpChange ? snapshotComposition(mpsMap[l.mp_id]) : (orig.composition_snapshot ?? null)
+      const payload = {
+        mp_id: l.mp_id,
+        masse_totale_kg: l.masseNum,
+        sacs_kg: [l.masseNum],
+        ordre: i,
+        composition_snapshot: snapshot ?? null,
+      }
+      const { error } = l.id
+        ? await supabase.from('batch_lignes').update(payload).eq('id', l.id)
+        : await supabase.from('batch_lignes').insert({ ...payload, batch_id: batch.id, sacs_consommes: [] })
+      if (error) { setSavingEdit(false); alert(`Erreur sur une ligne de matière.\n${error.message}`); return }
+    }
+
+    setSavingEdit(false)
+    setModalEdit(null)
     fetchAll()
   }
 
@@ -235,6 +305,9 @@ export default function Historique() {
                     <button onClick={() => openDetail(batch)} className="text-xs px-3 py-1.5 border border-gray-200 rounded-lg hover:bg-gray-50">
                       Détail
                     </button>
+                    <button onClick={() => ouvrirEdit(batch)} title="Corriger nom, recette ou matières" className="text-xs px-3 py-1.5 border border-blue-200 text-blue-700 rounded-lg hover:bg-blue-50">
+                      ✎ Modifier
+                    </button>
                     <button
                       onClick={() => rouvrirBatch(batch)}
                       title="Repasser en 'Batchs en cours' pour déclarer un reste oublié ou corriger les consommations"
@@ -329,6 +402,79 @@ export default function Historique() {
                   className="mt-2 px-3 py-1.5 text-xs border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-40">
                   {savingNote ? 'Enregistrement…' : 'Enregistrer la note'}
                 </button>
+              </div>
+            </div>
+          )
+        })()}
+      </Modal>
+
+      {/* Modal édition d'un batch d'historique */}
+      <Modal
+        open={!!modalEdit}
+        onClose={() => setModalEdit(null)}
+        title={modalEdit ? `Modifier — ${modalEdit.id}` : ''}
+        footer={
+          <>
+            <button onClick={() => setModalEdit(null)} className="px-4 py-2 text-sm border border-gray-200 rounded-lg hover:bg-gray-50">Annuler</button>
+            <button onClick={saveEdit} disabled={savingEdit} className="px-4 py-2 text-sm bg-gray-900 text-white rounded-lg hover:bg-gray-700 disabled:opacity-40">
+              {savingEdit ? 'Enregistrement…' : 'Enregistrer les corrections'}
+            </button>
+          </>
+        }
+      >
+        {modalEdit && (() => {
+          const mpsListe = Object.values(mpsMap).sort((a, b) => String(a.id).localeCompare(String(b.id)))
+          return (
+            <div className="space-y-4">
+              <p className="text-xs text-gray-500">
+                Correction d'un batch déjà clôturé. Le stock n'est pas modifié (le batch a déjà été consommé) —
+                seul l'enregistrement de l'historique est corrigé.
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Nom du batch</label>
+                  <input value={editForm.nom} onChange={e => setEditForm(f => ({ ...f, nom: e.target.value }))}
+                    className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2" />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Date</label>
+                  <input type="date" value={editForm.date_creation || ''} onChange={e => setEditForm(f => ({ ...f, date_creation: e.target.value }))}
+                    className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2" />
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Recette</label>
+                <select value={editForm.recette_id} onChange={e => setEditForm(f => ({ ...f, recette_id: e.target.value }))}
+                  className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2">
+                  <option value="">— Aucune —</option>
+                  {recettes.map(r => <option key={r.id} value={r.id}>{r.nom}{r.version_label ? ` (${r.version_label})` : ''}</option>)}
+                </select>
+              </div>
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-medium text-gray-700">Matières</p>
+                  <button onClick={ajouterEditLigne} className="text-xs px-2 py-1 border border-gray-200 rounded hover:bg-gray-50">+ Matière</button>
+                </div>
+                <div className="space-y-2">
+                  {editForm.lignes.map((l, i) => (
+                    <div key={i} className="flex gap-2 items-center">
+                      <select value={l.mp_id} onChange={e => majEditLigne(i, 'mp_id', e.target.value)}
+                        className="flex-1 min-w-[160px] text-sm border border-gray-200 rounded-lg px-2 py-1.5">
+                        <option value="">Choisir…</option>
+                        {mpsListe.map(m => <option key={m.id} value={m.id}>{m.id} — {m.nom}</option>)}
+                      </select>
+                      <input type="number" min="1" value={l.masse} onChange={e => majEditLigne(i, 'masse', e.target.value)}
+                        placeholder="kg" className="w-24 text-sm border border-gray-200 rounded-lg px-2 py-1.5" />
+                      <span className="text-xs text-gray-400">kg</span>
+                      <button onClick={() => supprimerEditLigne(i)} className="text-red-400 hover:text-red-600">×</button>
+                    </div>
+                  ))}
+                  {editForm.lignes.length === 0 && <p className="text-xs text-gray-400 italic">Aucune matière.</p>}
+                </div>
+                <p className="text-xs text-gray-400 mt-2">
+                  Changer une matière fige la composition de la nouvelle MP. La traçabilité des sacs d'origine
+                  des lignes modifiées est retirée (correction manuelle).
+                </p>
               </div>
             </div>
           )
