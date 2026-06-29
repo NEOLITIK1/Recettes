@@ -546,15 +546,10 @@ export default function BatchEnCours() {
   // ── Impression ─────────────────────────────────────────────────────────────
   function imprimerBatch(batch) {
     const rc = recettes.find(r => r.id === batch.recette_id)
-    const lignesEnrichies = batch.lignes.map(l => ({ mp: effectiveMp(mpsMap[l.mp_id], l.composition_snapshot), masse_totale_kg: l.masse_totale_kg, sacs_kg: l.sacs_kg }))
-    const comp = calcComposition(lignesEnrichies)
-    const ratioProd = ratioProduction(comp)
     const masseTotale = batch.lignes.reduce((s, l) => s + l.masse_totale_kg, 0)
 
-    const COMP_PARAMS_PRINT = COMP_PARAMS_FULL
-
     // Échappement HTML basique pour les valeurs venant de l'utilisateur
-    const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]))
+    const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]))
 
     // Récupère l'identifiant le plus utile pour un sac donné :
     // 1. snapshot stocké dans sacs_consommes (résiste à la suppression du sac)
@@ -569,130 +564,114 @@ export default function BatchEnCours() {
       }
     }
 
-    const lignesHtml = batch.lignes.map(l => {
+    // Une ligne du tableau silo = un sac à sortir (désignation/type/lot/lieu/qté
+    // pré-remplis ; "Qte sortie" et "Fait par & Rmq" laissés vides pour l'opérateur).
+    const rows = []
+    for (const l of batch.lignes) {
       const mp = mpsMap[l.mp_id]
-      const sacsConsommes = Array.isArray(l.sacs_consommes) ? l.sacs_consommes : []
-
-      let sacsHtml
-      if (sacsConsommes.length > 0) {
-        // Nouveau format détaillé : référence fournisseur en premier plan
-        sacsHtml = sacsConsommes.map((sc, i) => {
-          const info = sacInfo(sc)
-          const masse = Math.round(sc.masse_prise ?? 0)
-          // Sac partiel : on ne prélève qu'une partie du big bag → à signaler clairement
-          const masseSac = Math.round(sc.masse_avant_kg ?? 0)
-          const estPartiel = masseSac > 0 && masse < masseSac - 0.5
-          // Priorité d'affichage : N° lot fournisseur (lisible sur le big bag)
-          const idPrincipal = info.numero_lot_fournisseur
-            ? `<strong>N°lot ${esc(info.numero_lot_fournisseur)}</strong>`
-            : info.reference ? `<strong>${esc(info.reference)}</strong>` : `<strong>Sac ${i + 1}</strong>`
-          const meta = []
-          if (info.fournisseur) meta.push(esc(info.fournisseur))
-          if (info.numero_lot_fournisseur && info.reference) meta.push(`réf. ${esc(info.reference)}`)
-          if (info.emplacement) meta.push(`📍 ${esc(info.emplacement)}`)
-          const metaStr = meta.length ? ` <span style="color:#999;">· ${meta.join(' · ')}</span>` : ''
-          const partielBadge = estPartiel
-            ? ` <span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:4px;font-weight:700;font-size:11px;">⚠ PARTIEL — prélever ${masse} kg sur ${masseSac} kg</span>`
-            : ''
-          const masseStr = estPartiel
-            ? `<strong>${masse} kg</strong> <span style="color:#999;">(sac de ${masseSac} kg)</span>`
-            : `<strong>${masse} kg</strong>`
-          return `<div style="padding:3px 0 3px 10px;border-left:2px solid ${estPartiel ? '#f59e0b' : '#ddd'};margin:2px 0;">
-            ${idPrincipal}${metaStr} — ${masseStr}${partielBadge}
-          </div>`
-        }).join('')
+      const designation = mp?.nom ?? l.mp_id
+      const type = mp?.description || mp?.type_appro || ''
+      const sc = Array.isArray(l.sacs_consommes) ? l.sacs_consommes : []
+      if (sc.length > 0) {
+        for (const e of sc) {
+          const info = sacInfo(e)
+          const masse = Math.round(e.masse_prise ?? 0)
+          const masseSac = Math.round(e.masse_avant_kg ?? 0)
+          const partiel = masseSac > 0 && masse < masseSac - 0.5
+          rows.push({ designation, type, nlot: info.numero_lot_fournisseur || info.reference || '', lieu: info.emplacement || '', qte: masse, partiel, masseSac })
+        }
       } else {
-        // Fallback pour batchs anciens / manuels sans tracking : juste les masses
-        sacsHtml = (l.sacs_kg ?? [l.masse_totale_kg])
-          .map((s, i) => `Sac ${i + 1}: ${Math.round(s)} kg`).join(' | ')
-      }
-
-      return `<tr>
-        <td style="padding:8px;border-bottom:1px solid #eee;vertical-align:top;">${esc(mp?.nom ?? l.mp_id)}</td>
-        <td style="padding:8px;border-bottom:1px solid #eee;text-align:right;font-weight:600;vertical-align:top;">${Math.round(l.masse_totale_kg)} kg</td>
-        <td style="padding:8px;border-bottom:1px solid #eee;font-size:12px;color:#666;">${sacsHtml}</td>
-      </tr>`
-    }).join('')
-
-    const compHtml = comp && rc ? COMP_PARAMS_PRINT
-      .map(p => {
-        const e = comp[p.key] - (rc[p.cibleKey] ?? 0)
-        const color = Math.abs(e) <= 2 ? '#166534' : Math.abs(e) <= 5 ? '#92400e' : '#991b1b'
-        return `<tr>
-          <td style="padding:6px 8px;border-bottom:1px solid #eee;">${p.label}</td>
-          <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:right;">${fmt1(comp[p.key])}%</td>
-          <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:right;color:#999;">${rc[p.cibleKey] ?? 0}%</td>
-          <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:right;color:${color};font-weight:600;">${e >= 0 ? '+' : ''}${fmt1(e)}%</td>
-        </tr>`
-      }).join('') : ''
-
-    // Bloc "Mélange production" : ratio sable/plastique à viser
-    let prodHtml = ''
-    if (ratioProd) {
-      const sableAjout = Math.round(masseTotale * ratioProd.sablePct / ratioProd.plastiquePct)
-      if (ratioProd.impossible) {
-        prodHtml = `<div style="margin-bottom:24px;padding:12px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;">
-          <div style="font-weight:700;color:#92400e;margin-bottom:4px;">🏭 Mélange production</div>
-          <div style="font-size:13px;color:#92400e;">Ce batch contient déjà <strong>${fmt1(ratioProd.mineralPct)}%</strong> de sable/minéral, soit autant ou plus que la cible standard (${ratioProd.sableStd}/${ratioProd.plastStd}). <strong>Ne pas ajouter de sable</strong> en production.</div>
-        </div>`
-      } else if (ratioProd.standard) {
-        prodHtml = `<div style="margin-bottom:24px;padding:12px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;">
-          <div style="font-weight:700;color:#1e3a8a;margin-bottom:4px;">🏭 Mélange production</div>
-          <div style="font-size:16px;font-weight:700;color:#1e3a8a;">Viser ${ratioProd.sableStd}% sable · ${ratioProd.plastStd}% plastique (ce batch)</div>
-          <div style="font-size:12px;color:#1d4ed8;margin-top:2px;">soit ≈ <strong>${sableAjout.toLocaleString('fr-FR')} kg de sable à ajouter</strong> pour ${Math.round(masseTotale).toLocaleString('fr-FR')} kg de batch</div>
-        </div>`
-      } else {
-        prodHtml = `<div style="margin-bottom:24px;padding:12px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;">
-          <div style="font-weight:700;color:#92400e;margin-bottom:4px;">🏭 Mélange production — sable déjà pré-intégré</div>
-          <div style="font-size:13px;color:#92400e;">Ce batch contient déjà <strong>${fmt1(ratioProd.mineralPct)}%</strong> de sable/minéral. Au lieu du standard ${ratioProd.sableStd}/${ratioProd.plastStd}, viser :</div>
-          <div style="font-size:16px;font-weight:700;color:#78350f;margin-top:4px;">${Math.round(ratioProd.sablePct)}% sable · ${Math.round(ratioProd.plastiquePct)}% plastique (ce batch)</div>
-          <div style="font-size:12px;color:#a16207;margin-top:2px;">soit ≈ <strong>${sableAjout.toLocaleString('fr-FR')} kg de sable à ajouter</strong> pour ${Math.round(masseTotale).toLocaleString('fr-FR')} kg de batch</div>
-        </div>`
+        const masses = (l.sacs_kg && l.sacs_kg.length ? l.sacs_kg : [l.masse_totale_kg])
+        for (const m of masses) {
+          rows.push({ designation, type, nlot: '', lieu: '', qte: Math.round(m), partiel: false, masseSac: 0 })
+        }
       }
     }
+
+    const MIN_ROWS = 12
+    const totalRows = Math.max(rows.length, MIN_ROWS)
+    let rowsHtml = ''
+    for (let i = 0; i < totalRows; i++) {
+      const r = rows[i]
+      if (!r) {
+        rowsHtml += '<tr><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>'
+        continue
+      }
+      const qteCell = r.partiel
+        ? `${r.qte} kg<br><span style="color:#b45309;font-weight:700;font-size:10px;">⚠ PARTIEL (sac ${r.masseSac} kg)</span>`
+        : `${r.qte} kg`
+      rowsHtml += `<tr>
+        <td>${esc(r.designation)}</td>
+        <td>${esc(r.type)}</td>
+        <td>${esc(r.nlot)}</td>
+        <td>${esc(r.lieu)}</td>
+        <td style="text-align:right;font-weight:600;">${qteCell}</td>
+        <td></td>
+        <td></td>
+      </tr>`
+    }
+
+    const dateStr = batch.date_creation ? new Date(batch.date_creation).toLocaleDateString('fr-FR') : ''
 
     const html = `<!DOCTYPE html>
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
-<title>Fiche batch ${batch.id}</title>
+<title>Feuille préparation silo ${esc(batch.nom)}</title>
 <style>
-  body { font-family: Arial, sans-serif; font-size: 14px; color: #111; margin: 32px; }
-  h1 { font-size: 20px; margin-bottom: 4px; }
-  .sub { color: #666; font-size: 13px; margin-bottom: 24px; }
-  table { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
-  th { text-align: left; padding: 8px; background: #f5f5f5; font-size: 12px; color: #555; }
-  .footer { margin-top: 40px; font-size: 12px; color: #999; border-top: 1px solid #eee; padding-top: 12px; }
-  @media print { body { margin: 16px; } }
+  body { font-family: Arial, sans-serif; font-size: 13px; color: #111; margin: 24px; }
+  .logo { display:flex; align-items:center; gap:8px; }
+  .logo .mark { font-size: 26px; line-height: 1; }
+  .logo .name { font-size: 22px; font-weight: 700; letter-spacing: 1px; }
+  h1 { font-size: 18px; text-align: center; margin: 4px 0 14px; }
+  .ident td { font-size: 15px; font-weight: 700; padding: 2px 0; }
+  .notice { font-size: 12px; line-height: 1.55; margin-bottom: 12px; }
+  table.silo { width: 100%; border-collapse: collapse; }
+  table.silo th, table.silo td { border: 1px solid #333; padding: 6px 8px; font-size: 12px; vertical-align: top; }
+  table.silo th { background: #efefef; text-align: left; }
+  table.silo td { height: 30px; }
+  .pp { margin-top: 22px; font-weight: 700; text-decoration: underline; }
+  @media print { body { margin: 12mm; } }
 </style>
 </head>
 <body>
-<div style="display:flex;justify-content:space-between;align-items:start;">
-  <div>
-    <h1>${batch.nom}</h1>
-    <div class="sub">${batch.id} · ${rc?.nom ?? ''} · ${batch.date_creation ?? ''} · Total : ${Math.round(masseTotale).toLocaleString('fr-FR')} kg</div>
-  </div>
-  <div style="font-size:20px;font-weight:700;color:#16a34a;">NEOLITIK</div>
-</div>
+<div class="logo"><span class="mark">⬡</span><span class="name">NEOLITIK</span></div>
+<h1>Feuille de préparation silo</h1>
 
-<h2 style="font-size:14px;margin-bottom:8px;">Matières à mélanger</h2>
-<table>
-  <thead><tr><th>Matière</th><th style="text-align:right;">Total</th><th>Répartition sacs</th></tr></thead>
-  <tbody>${lignesHtml}</tbody>
+<table style="width:100%;margin-bottom:6px;" class="ident">
+  <tr>
+    <td>Batch n° : ${esc(batch.nom)} <span style="font-weight:400;color:#555;font-size:12px;">(${esc(batch.id)}${rc?.nom ? ' · ' + esc(rc.nom) : ''})</span></td>
+    <td style="text-align:right;">Du : ${dateStr}</td>
+  </tr>
 </table>
 
-${prodHtml}
-
-${compHtml ? `<h2 style="font-size:14px;margin-bottom:8px;">Composition résultante vs cible</h2>
-<table>
-  <thead><tr><th>Paramètre</th><th style="text-align:right;">Résultat</th><th style="text-align:right;">Cible</th><th style="text-align:right;">Écart</th></tr></thead>
-  <tbody>${compHtml}</tbody>
-</table>` : ''}
-
-<div class="footer">
-  Imprimé le ${new Date().toLocaleDateString('fr-FR')} · NEOLITIK Production
-  <div style="margin-top:16px;">Signature opérateur : ___________________________</div>
+<div class="notice">
+  Codification du batch Couleur + date (ex : NOIR 15062026)<br>
+  Les cases désignation, Type, n°lot, lieu et Qte sont remplies par l'ordonnancement<br>
+  La personne qui sort note la quantité réellement sortie, son nom<br>
+  Noter dans remarque les anomalies rencontrées<br>
+  Cette feuille est accrochée sur le côté droit du poste de déchargement silo.<br>
+  Lorsque le chargement est terminé une copie est remise à l'ordonnancement.
 </div>
+
+<table class="silo">
+  <thead>
+    <tr>
+      <th style="width:20%;">Désignation :</th>
+      <th style="width:18%;">Type :</th>
+      <th style="width:11%;">N°lot</th>
+      <th style="width:9%;">lieu</th>
+      <th style="width:11%;">Qte à sortir</th>
+      <th style="width:11%;">Qte Sortie</th>
+      <th style="width:20%;">Fait par &amp; Rmq</th>
+    </tr>
+  </thead>
+  <tbody>${rowsHtml}</tbody>
+</table>
+
+<div style="text-align:right;font-size:12px;margin-top:6px;">Total à sortir : <strong>${Math.round(masseTotale).toLocaleString('fr-FR')} kg</strong></div>
+
+<p class="pp">Point particulier :</p>
 <script>window.addEventListener('load', () => setTimeout(() => window.print(), 100));</script>
 </body></html>`
 
