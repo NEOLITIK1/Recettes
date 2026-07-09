@@ -28,6 +28,7 @@ export function lignePourSac(sac, taken, ordre, mpEffectif = null) {
       fournisseur: sac.fournisseur ?? null,
       numero_lot_fournisseur: sac.numero_lot_fournisseur ?? null,
       emplacement: sac.emplacement ?? null,
+      commentaire: sac.commentaire ?? null,
     }],
     // Fige la composition (complète si mpEffectif fourni, sinon l'override seul)
     composition_snapshot: mpEffectif

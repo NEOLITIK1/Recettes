@@ -4,6 +4,7 @@ import { effectiveMp } from '../lib/calculs.js'
 import Modal from '../components/Modal.jsx'
 import TooltipMp from '../components/TooltipMp.jsx'
 import VueParMatiere from '../components/VueParMatiere.jsx'
+import SearchableSelect from '../components/SearchableSelect.jsx'
 
 const STATUT_STYLES = {
   disponible: 'bg-emerald-50 text-emerald-700',
@@ -21,17 +22,18 @@ const COMPO_KEYS = [
   ['pct_charge_minerale', '% Charge minérale'],
 ]
 
-const EMPTY_FORM = {
-  id: null,
-  mp_id: '',
-  masse_kg: '',
-  reference: '',
-  statut: 'disponible',
-  fournisseur: '',
-  numero_lot_fournisseur: '',
-  date_reception: '',
-  emplacement: '',
-  composition_override: null,
+// Champs communs à un lot + une liste de sacs (masse/réf/emplacement/commentaire par sac)
+function newForm() {
+  return {
+    id: null,
+    mp_id: '',
+    statut: 'disponible',
+    fournisseur: '',
+    numero_lot_fournisseur: '',
+    date_reception: '',
+    composition_override: null,
+    lignes: [{ masse_kg: '', reference: '', emplacement: '', commentaire: '' }],
+  }
 }
 
 export default function Stock() {
@@ -39,9 +41,9 @@ export default function Stock() {
   const [mps, setMps] = useState([])
   const [loading, setLoading] = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
-  const [form, setForm] = useState(EMPTY_FORM)
+  const [form, setForm] = useState(newForm())
   const [editId, setEditId] = useState(null)
-  const [filtre, setFiltre] = useState('disponible')
+  const [filtre, setFiltre] = useState('stock')
   const [showCompoOverride, setShowCompoOverride] = useState(false)
 
   // Scindage d'un sac en plusieurs sacs réels (ex: batch récupéré puis pesé)
@@ -81,7 +83,7 @@ export default function Stock() {
   const mpsEnAlerteIds = new Set(alertesStock.map(a => a.mp.id))
 
   function openNew() {
-    setForm(EMPTY_FORM)
+    setForm(newForm())
     setEditId(null)
     setShowCompoOverride(false)
     setModalOpen(true)
@@ -91,38 +93,59 @@ export default function Stock() {
     setForm({
       id: sac.id,
       mp_id: sac.mp_id ?? '',
-      masse_kg: sac.masse_kg ?? '',
-      reference: sac.reference ?? '',
       statut: sac.statut ?? 'disponible',
       fournisseur: sac.fournisseur ?? '',
       numero_lot_fournisseur: sac.numero_lot_fournisseur ?? '',
       date_reception: sac.date_reception ?? '',
-      emplacement: sac.emplacement ?? '',
       composition_override: sac.composition_override ?? null,
+      lignes: [{
+        masse_kg: sac.masse_kg ?? '',
+        reference: sac.reference ?? '',
+        emplacement: sac.emplacement ?? '',
+        commentaire: sac.commentaire ?? '',
+      }],
     })
     setEditId(sac.id)
     setShowCompoOverride(!!sac.composition_override)
     setModalOpen(true)
   }
 
+  function majLigneSac(i, field, val) {
+    setForm(p => ({ ...p, lignes: p.lignes.map((l, idx) => idx === i ? { ...l, [field]: val } : l) }))
+  }
+  function ajouterLigneSac() {
+    setForm(p => ({ ...p, lignes: [...p.lignes, { masse_kg: '', reference: '', emplacement: '', commentaire: '' }] }))
+  }
+  function supprimerLigneSac(i) {
+    setForm(p => ({ ...p, lignes: p.lignes.filter((_, idx) => idx !== i) }))
+  }
+
   async function handleSave() {
-    if (!form.mp_id || !form.masse_kg) return
-    const payload = {
+    if (!form.mp_id) { alert('Sélectionnez une matière première.'); return }
+    const lignesValides = form.lignes.filter(l => parseFloat(l.masse_kg) > 0)
+    if (lignesValides.length === 0) { alert('Renseignez au moins un sac avec une masse.'); return }
+
+    const commun = {
       mp_id: form.mp_id,
-      masse_kg: parseFloat(form.masse_kg),
-      reference: form.reference || null,
       statut: form.statut,
       fournisseur: form.fournisseur || null,
       numero_lot_fournisseur: form.numero_lot_fournisseur || null,
       date_reception: form.date_reception || null,
-      emplacement: form.emplacement || null,
       composition_override: showCompoOverride ? form.composition_override : null,
     }
+    const sacDepuisLigne = l => ({
+      ...commun,
+      masse_kg: parseFloat(l.masse_kg),
+      reference: l.reference || null,
+      emplacement: l.emplacement || null,
+      commentaire: l.commentaire || null,
+    })
+
     const { error } = editId
-      ? await supabase.from('sacs').update(payload).eq('id', editId)
-      : await supabase.from('sacs').insert(payload)
+      ? await supabase.from('sacs').update(sacDepuisLigne(lignesValides[0])).eq('id', editId)
+      : await supabase.from('sacs').insert(lignesValides.map(sacDepuisLigne))
     if (error) {
-      alert(`Erreur : le sac n'a pas pu être enregistré.\n${error.message}`)
+      alert(`Erreur : le(s) sac(s) n'ont pas pu être enregistrés.\n${error.message}`)
       return
     }
     setModalOpen(false)
@@ -206,6 +229,7 @@ export default function Stock() {
   const sacsAffiches = sacs.filter(s => {
     if (filtre === 'tous') return true
     if (filtre === 'alertes') return mpsEnAlerteIds.has(s.mp_id) && s.statut !== 'consomme'
+    if (filtre === 'stock') return s.statut !== 'consomme' // disponibles + partiels ensemble
     return s.statut === filtre
   })
   const sacsDispo = sacs.filter(s => s.statut !== 'consomme')
@@ -261,8 +285,7 @@ export default function Stock() {
       {/* Filtre */}
       <div className="flex gap-2 mb-4 flex-wrap">
         {[
-          { key: 'disponible', label: 'Disponibles' },
-          { key: 'partiel',    label: 'Partiels' },
+          { key: 'stock',      label: 'En stock' },
           { key: 'consomme',   label: 'Consommés' },
           { key: 'tous',       label: 'Tous' },
           { key: 'alertes',    label: `Alertes${alertesStock.length > 0 ? ` (${alertesStock.length})` : ''}`, danger: alertesStock.length > 0 },
@@ -327,7 +350,10 @@ export default function Stock() {
                         </>
                       ) : '—'}
                     </td>
-                    <td className="px-4 py-3 text-xs text-gray-500">{sac.emplacement ? <span>📍 {sac.emplacement}</span> : '—'}</td>
+                    <td className="px-4 py-3 text-xs text-gray-500">
+                      {sac.emplacement ? <span>📍 {sac.emplacement}</span> : '—'}
+                      {sac.commentaire && <span title={sac.commentaire} className="ml-1 text-blue-500 cursor-help">💬</span>}
+                    </td>
                     <td className="px-4 py-3 text-right font-semibold tabular-nums">{Math.round(sac.masse_kg).toLocaleString('fr-FR')} kg</td>
                     <td className="px-4 py-3">
                       <span className={`px-2 py-0.5 rounded text-xs font-medium ${STATUT_STYLES[sac.statut]}`}>
@@ -428,39 +454,16 @@ export default function Stock() {
         <div className="space-y-4">
           <div>
             <label className="block text-xs text-gray-500 mb-1">Matière première *</label>
-            <select
+            <SearchableSelect
               value={form.mp_id}
-              onChange={e => setForm(p => ({...p, mp_id: e.target.value}))}
-              className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-gray-400"
-            >
-              <option value="">Sélectionner…</option>
-              {mps.map(m => <option key={m.id} value={m.id}>{m.id} — {m.nom}</option>)}
-            </select>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Masse (kg) *</label>
-              <input
-                type="number" min="1"
-                value={form.masse_kg}
-                onChange={e => setForm(p => ({...p, masse_kg: e.target.value}))}
-                placeholder="500"
-                className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-gray-400"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Référence interne</label>
-              <input
-                value={form.reference}
-                onChange={e => setForm(p => ({...p, reference: e.target.value}))}
-                placeholder="SAC-2026-001"
-                className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-gray-400"
-              />
-            </div>
+              onChange={v => setForm(p => ({ ...p, mp_id: v }))}
+              placeholder="Rechercher une matière…"
+              options={mps.filter(m => !m.archivee || m.id === form.mp_id).map(m => ({ value: m.id, label: `${m.id} — ${m.nom}` }))}
+            />
           </div>
 
           <div className="pt-3 border-t border-gray-100">
-            <p className="text-xs font-medium text-gray-700 mb-2">Traçabilité fournisseur (optionnel)</p>
+            <p className="text-xs font-medium text-gray-700 mb-2">Traçabilité fournisseur <span className="text-gray-400 font-normal">(commune au lot, optionnel)</span></p>
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs text-gray-500 mb-1">Fournisseur</label>
@@ -479,11 +482,53 @@ export default function Stock() {
                 <input type="date" value={form.date_reception} onChange={e => setForm(p => ({...p, date_reception: e.target.value}))}
                   className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2" />
               </div>
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">Emplacement <span className="text-gray-400">(travée, coin atelier…)</span></label>
-                <input value={form.emplacement} onChange={e => setForm(p => ({...p, emplacement: e.target.value}))}
-                  placeholder="ex: Travée B3" className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2" />
-              </div>
+            </div>
+          </div>
+
+          {/* Sacs du lot : masse/référence/emplacement/commentaire par sac */}
+          <div className="pt-3 border-t border-gray-100">
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs font-medium text-gray-700">
+                {editId ? 'Sac' : 'Sacs'} <span className="text-gray-400 font-normal">(masse, réf., emplacement et commentaire par sac)</span>
+              </p>
+              {!editId && (
+                <button onClick={ajouterLigneSac} className="text-xs px-2 py-1 border border-gray-200 rounded hover:bg-gray-50">+ Sac (même matière)</button>
+              )}
+            </div>
+            <div className="space-y-3">
+              {form.lignes.map((l, i) => (
+                <div key={i} className="border border-gray-100 rounded-lg p-2 bg-gray-50 space-y-2">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-0.5">Masse (kg) *</label>
+                      <input type="number" min="1" value={l.masse_kg} onChange={e => majLigneSac(i, 'masse_kg', e.target.value)}
+                        placeholder="500" className="w-full text-sm border border-gray-200 rounded-lg px-2 py-1.5 bg-white" />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-0.5">Référence interne</label>
+                      <input value={l.reference} onChange={e => majLigneSac(i, 'reference', e.target.value)}
+                        placeholder="SAC-2026-001" className="w-full text-sm border border-gray-200 rounded-lg px-2 py-1.5 bg-white" />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-0.5">Emplacement <span className="text-gray-400">(travée…)</span></label>
+                      <input value={l.emplacement} onChange={e => majLigneSac(i, 'emplacement', e.target.value)}
+                        placeholder="Travée B3" className="w-full text-sm border border-gray-200 rounded-lg px-2 py-1.5 bg-white" />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-0.5">Commentaire</label>
+                      <input value={l.commentaire} onChange={e => majLigneSac(i, 'commentaire', e.target.value)}
+                        placeholder="ex: humide, à contrôler…" className="w-full text-sm border border-gray-200 rounded-lg px-2 py-1.5 bg-white" />
+                    </div>
+                  </div>
+                  {!editId && form.lignes.length > 1 && (
+                    <div className="text-right">
+                      <button onClick={() => supprimerLigneSac(i)} className="text-xs text-red-400 hover:text-red-600">Retirer ce sac</button>
+                    </div>
+                  )}
+                </div>
+              ))}
             </div>
           </div>
 

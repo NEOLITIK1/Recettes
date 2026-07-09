@@ -561,6 +561,7 @@ export default function BatchEnCours() {
         fournisseur:            sacEntry?.fournisseur            ?? fromMap?.fournisseur            ?? null,
         numero_lot_fournisseur: sacEntry?.numero_lot_fournisseur ?? fromMap?.numero_lot_fournisseur ?? null,
         emplacement:            sacEntry?.emplacement            ?? fromMap?.emplacement            ?? null,
+        commentaire:            sacEntry?.commentaire            ?? fromMap?.commentaire            ?? null,
       }
     }
 
@@ -578,7 +579,7 @@ export default function BatchEnCours() {
           const masse = Math.round(e.masse_prise ?? 0)
           const masseSac = Math.round(e.masse_avant_kg ?? 0)
           const partiel = masseSac > 0 && masse < masseSac - 0.5
-          rows.push({ designation, type, nlot: info.numero_lot_fournisseur || info.reference || '', lieu: info.emplacement || '', qte: masse, partiel, masseSac })
+          rows.push({ designation, type, nlot: info.numero_lot_fournisseur || info.reference || '', lieu: info.emplacement || '', qte: masse, partiel, masseSac, commentaire: info.commentaire || '' })
         }
       } else {
         const masses = (l.sacs_kg && l.sacs_kg.length ? l.sacs_kg : [l.masse_totale_kg])
@@ -600,8 +601,11 @@ export default function BatchEnCours() {
       const qteCell = r.partiel
         ? `${r.qte} kg<br><span style="color:#b45309;font-weight:700;font-size:10px;">⚠ PARTIEL (sac ${r.masseSac} kg)</span>`
         : `${r.qte} kg`
+      const desCell = r.commentaire
+        ? `${esc(r.designation)}<br><span style="color:#2563eb;font-size:10px;">💬 ${esc(r.commentaire)}</span>`
+        : esc(r.designation)
       rowsHtml += `<tr>
-        <td>${esc(r.designation)}</td>
+        <td>${desCell}</td>
         <td>${esc(r.type)}</td>
         <td>${esc(r.nlot)}</td>
         <td>${esc(r.lieu)}</td>
