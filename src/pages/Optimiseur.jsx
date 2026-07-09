@@ -5,6 +5,7 @@ import { creerBatchAvecStock, lignePourSac, sacUpdatePourPrise } from '../lib/ba
 import EcartBadge from '../components/EcartBadge.jsx'
 import TooltipMp from '../components/TooltipMp.jsx'
 import SuggestionsReappro from '../components/SuggestionsReappro.jsx'
+import SearchableSelect from '../components/SearchableSelect.jsx'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Algorithme : sélection greedy diversifiée + phase d'optimisation fine
@@ -373,6 +374,44 @@ export default function Optimiseur() {
     setPropIndex(-1)
   }
 
+  // ── Édition en place de la proposition courante ──────────────────────────────
+  // (retirer un sac, modifier sa quantité, le passer en entier, ou en ajouter un)
+  function majSelection(updater) {
+    setPropositions(prev => prev.map((sel, idx) => idx === propIndex ? updater(sel) : sel))
+  }
+  function majTakenSac(i, val) {
+    const kg = parseFloat(val)
+    majSelection(sel => sel.map((s, idx) => {
+      if (idx !== i) return s
+      const max = s.masse_avant_kg ?? s.sac.masse_kg ?? 0
+      const taken = Math.min(Math.max(0, isNaN(kg) ? 0 : kg), max)
+      return { ...s, taken, partial: taken < max - 0.5 }
+    }))
+  }
+  function sacEntier(i) {
+    majSelection(sel => sel.map((s, idx) => {
+      if (idx !== i) return s
+      const max = s.masse_avant_kg ?? s.sac.masse_kg ?? 0
+      return { ...s, taken: max, partial: false }
+    }))
+  }
+  function retirerSacSelection(i) {
+    majSelection(sel => sel.filter((_, idx) => idx !== i))
+  }
+  function ajouterSacSelection(sacId) {
+    const sac = sacs.find(s => s.id === sacId)
+    if (!sac) return
+    majSelection(sel => [...sel, {
+      sac,
+      mp: effectiveMp(mpsMap[sac.mp_id], sac.composition_override),
+      taken: sac.masse_kg ?? 0,
+      partial: false,
+      forced: false,
+      masse_avant_kg: sac.masse_kg ?? 0,
+      statut_avant: sac.statut ?? 'disponible',
+    }])
+  }
+
   useEffect(() => {
     if (prefillPending && recettes.length > 0 && sacs.length > 0) {
       setPrefillPending(false)
@@ -505,6 +544,9 @@ export default function Optimiseur() {
 
   async function valider() {
     if (!selection?.length) return
+    // Ignorer les sacs mis à 0 kg lors de l'édition manuelle du résultat
+    const selEff = selection.filter(s => (s.taken ?? 0) > 0)
+    if (!selEff.length) { alert('Aucun sac avec une masse > 0.'); return }
     setSaving(true)
 
     const recette = recettes.find(r => r.id === rcId)
@@ -513,9 +555,9 @@ export default function Optimiseur() {
     // Codification : "S-260709" (code couleur + date). L'utilisateur peut surcharger.
     const nom = nomBatch.trim() || codificationBatch(recette)
 
-    const lignesEnrichiesCout = selection.map(({ mp, taken }) => ({ mp, masse_totale_kg: taken }))
+    const lignesEnrichiesCout = selEff.map(({ mp, taken }) => ({ mp, masse_totale_kg: taken }))
     const coutTotal = calcCout(lignesEnrichiesCout)
-    const masseTotale = selection.reduce((s, { taken }) => s + taken, 0)
+    const masseTotale = selEff.reduce((s, { taken }) => s + taken, 0)
     const coutParTonne = masseTotale > 0 ? coutTotal / masseTotale * 1000 : 0
 
     // Batch + lignes + stock en une transaction (lib partagée, RPC v9 avec fallback).
@@ -534,7 +576,7 @@ export default function Optimiseur() {
     if (sacsForces.length > 0 || restrictions.length > 0) {
       batch.optimiseur_params = { sacsForces: sacsForces.filter(f => f.sacId), restrictions }
     }
-    const lignes = selection.map((s, i) => {
+    const lignes = selEff.map((s, i) => {
       const ligne = lignePourSac(s.sac, s.taken, i, s.mp)
       // L'algo a annoté l'état initial du sac (avant prélèvements multi-passes)
       ligne.sacs_consommes[0].masse_avant_kg = s.masse_avant_kg ?? (s.sac.masse_kg ?? 0)
@@ -544,7 +586,7 @@ export default function Optimiseur() {
     // MAJ stock : cumul des prélèvements par sac (un même sac peut apparaître
     // en MP forcée puis en phase d'optimisation)
     const priseParSac = new Map()
-    for (const { sac, taken } of selection) {
+    for (const { sac, taken } of selEff) {
       const cur = priseParSac.get(sac.id) ?? { sac, taken: 0 }
       cur.taken += taken
       priseParSac.set(sac.id, cur)
@@ -576,6 +618,7 @@ export default function Optimiseur() {
   const coutEstime = selection ? calcCout(selection.map(({ mp, taken }) => ({ mp, masse_totale_kg: taken }))) : 0
   const masseSelection = selection ? selection.reduce((s, { taken }) => s + taken, 0) : 0
   const coutParTonneEstime = masseSelection > 0 ? Math.round(coutEstime / masseSelection * 1000) : 0
+  const selectionSacIds = new Set((selection ?? []).map(s => s.sac.id))
 
   const COMP_PARAMS = COMP_PARAMS_FULL
 
@@ -799,8 +842,9 @@ export default function Optimiseur() {
           })()}
 
           <div className="bg-white rounded-xl border border-gray-200">
-            <div className="px-5 py-3 border-b border-gray-100">
+            <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
               <p className="text-sm font-medium text-gray-900">Sacs à utiliser</p>
+              <p className="text-xs text-gray-400">Modifiable : ajustez, retirez ou ajoutez des sacs</p>
             </div>
             <table className="w-full text-sm">
               <thead>
@@ -808,12 +852,14 @@ export default function Optimiseur() {
                   <th className="text-left px-4 py-2 text-xs font-medium text-gray-500">Réf.</th>
                   <th className="text-left px-4 py-2 text-xs font-medium text-gray-500">Matière</th>
                   <th className="text-left px-4 py-2 text-xs font-medium text-gray-500">Emplacement</th>
-                  <th className="text-right px-4 py-2 text-xs font-medium text-gray-500">Masse</th>
-                  <th className="text-left px-4 py-2 text-xs font-medium text-gray-500">Note</th>
+                  <th className="text-right px-4 py-2 text-xs font-medium text-gray-500">Masse prélevée</th>
+                  <th className="px-4 py-2"></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
-                {selection.map(({ sac, mp, taken, partial, forced }, i) => (
+                {selection.map(({ sac, mp, taken, partial, forced }, i) => {
+                  const max = Math.round(sac.masse_kg ?? 0)
+                  return (
                   <tr key={i} className={forced ? 'bg-blue-50' : 'hover:bg-gray-50'}>
                     <td className="px-4 py-3 font-mono text-xs text-gray-400">
                       {sac.reference || '—'}
@@ -829,20 +875,48 @@ export default function Optimiseur() {
                     <td className="px-4 py-3 text-xs text-gray-500">
                       {sac.emplacement ? <span>📍 {sac.emplacement}</span> : '—'}
                     </td>
-                    <td className="px-4 py-3 text-right font-semibold tabular-nums">
-                      {Math.round(taken).toLocaleString('fr-FR')} kg
-                      {partial && <span className="block text-xs font-normal text-amber-600">sur {Math.round(sac.masse_kg ?? 0)} kg du sac</span>}
+                    <td className="px-4 py-3 text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        <input
+                          type="number" min="0" max={max}
+                          value={Math.round(taken)}
+                          onChange={e => majTakenSac(i, e.target.value)}
+                          className="w-20 text-sm text-right border border-gray-200 rounded px-2 py-1 focus:outline-none focus:border-gray-400 tabular-nums"
+                        />
+                        <span className="text-xs text-gray-400 whitespace-nowrap">/ {max} kg</span>
+                      </div>
+                      {partial && <div className="text-xs text-amber-600 mt-0.5">partiel</div>}
                     </td>
                     <td className="px-4 py-3">
-                      <div className="flex gap-1 flex-wrap">
+                      <div className="flex gap-1 flex-wrap items-center justify-end">
                         {forced && <span className="text-xs text-blue-600 bg-blue-100 px-2 py-0.5 rounded">Imposé</span>}
-                        {partial && <span className="text-xs text-amber-700 bg-amber-100 px-2 py-0.5 rounded font-medium">⚠ Sac partiel</span>}
+                        {partial && (
+                          <button onClick={() => sacEntier(i)} title="Utiliser le sac en entier"
+                            className="text-xs px-2 py-0.5 border border-emerald-200 text-emerald-700 rounded hover:bg-emerald-50">
+                            Entier
+                          </button>
+                        )}
+                        <button onClick={() => retirerSacSelection(i)} title="Retirer ce sac du batch (sans exclure la matière)"
+                          className="text-xs px-2 py-0.5 border border-red-100 text-red-600 rounded hover:bg-red-50">
+                          Retirer
+                        </button>
                       </div>
                     </td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
+            <div className="px-4 py-3 border-t border-gray-100">
+              <SearchableSelect
+                value=""
+                onChange={ajouterSacSelection}
+                placeholder="+ Ajouter un sac au batch…"
+                options={sacs
+                  .filter(s => !selectionSacIds.has(s.id))
+                  .map(s => ({ value: s.id, label: `${mpsMap[s.mp_id]?.nom ?? s.mp_id} · ${labelSacOpt(s)}` }))}
+              />
+            </div>
           </div>
 
           {comp && recette && (
