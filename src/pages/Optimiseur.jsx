@@ -95,8 +95,13 @@ function optimiser(sacsDispo, mpsMap, recette, masseCible, sacsForces = [], seed
     // Variation pseudo-aléatoire pour générer des propositions différentes au même seed
     const variation = seed > 0 ? (pseudoRand(idx) - 0.5) * 0.3 * Math.max(distPolymere, 1) : 0
 
+    // Priorité aux sacs PARTIELS (finir les big bags déjà ouverts avant d'en ouvrir
+    // de nouveaux). Bonus modéré : préféré à composition comparable, mais un sac
+    // plein nettement mieux placé peut quand même l'emporter.
+    const bonusPartiel = sac.statut === 'partiel' ? -25 : 0
+
     // Plus c'est BAS, mieux c'est (on minimise)
-    return dist + penaliteConcentration + variation
+    return dist + penaliteConcentration + variation + bonusPartiel
   }
 
   // Pool de sacs candidats : copie qu'on va consommer petit à petit
@@ -389,7 +394,8 @@ export default function Optimiseur() {
     const map = {}
     for (const mp of (mpsData ?? [])) map[mp.id] = mp
     setMpsMap(map)
-    if (rc?.length && !rcId) setRcId(rc[0].id)
+    // Ne pas écraser une recette déjà choisie (brouillon/prefill restauré) — maj fonctionnelle
+    if (rc?.length) setRcId(prev => prev || rc[0].id)
     setLoading(false)
   }
 
@@ -419,6 +425,19 @@ export default function Optimiseur() {
   }
   function supprimerSacForce(i) {
     setSacsForces(prev => prev.filter((_, idx) => idx !== i))
+  }
+  // Forcer TOUS les sacs disponibles d'une matière (comme "exclure totalement", mais à l'inverse)
+  function forcerTousSacsMp(mpId) {
+    if (!mpId) return
+    setSacsForces(prev => {
+      const dejaPris = new Set(prev.map(f => f.sacId).filter(Boolean))
+      const nouveaux = sacs
+        .filter(s => s.mp_id === mpId && !dejaPris.has(s.id))
+        .map(s => ({ mpFiltre: mpId, sacId: s.id, taken: String(Math.round(s.masse_kg ?? 0)) }))
+      if (nouveaux.length === 0) return prev
+      // On garde les lignes déjà renseignées, on retire les lignes vides, on ajoute tous les sacs
+      return [...prev.filter(f => f.sacId), ...nouveaux]
+    })
   }
   function labelSacOpt(sac) {
     const ref = sac.reference || (sac.numero_lot_fournisseur ? `N°${sac.numero_lot_fournisseur}` : sac.id.slice(0, 8))
@@ -655,6 +674,12 @@ export default function Optimiseur() {
                   className="w-24 text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-gray-400 disabled:bg-gray-50"
                 />
                 <span className="text-xs text-gray-400">kg{sacChoisi ? ` / ${Math.round(sacChoisi.masse_kg ?? 0)}` : ''}</span>
+                {f.mpFiltre && (
+                  <button onClick={() => forcerTousSacsMp(f.mpFiltre)} title="Forcer tous les sacs en stock de cette matière"
+                    className="text-xs px-2 py-1 border border-blue-200 text-blue-700 rounded hover:bg-blue-50">
+                    Tous les sacs de cette MP
+                  </button>
+                )}
                 <button onClick={() => supprimerSacForce(i)} className="text-red-400 hover:text-red-600 text-lg leading-none px-1">×</button>
               </div>
             )
@@ -773,7 +798,7 @@ export default function Optimiseur() {
             )
           })()}
 
-          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          <div className="bg-white rounded-xl border border-gray-200">
             <div className="px-5 py-3 border-b border-gray-100">
               <p className="text-sm font-medium text-gray-900">Sacs à utiliser</p>
             </div>
