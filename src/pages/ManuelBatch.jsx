@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase.js'
 import { calcComposition, calcCout, fmt1, effectiveMp, COMP_PARAMS_FULL, codificationBatch } from '../lib/calculs.js'
 import { creerBatchAvecStock, lignePourSac, sacUpdatePourPrise } from '../lib/batchOps.js'
@@ -19,6 +20,7 @@ export default function ManuelBatch() {
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [showReappro, setShowReappro] = useState(false)
+  const navigate = useNavigate()
 
   useEffect(() => {
     fetchAll()
@@ -48,6 +50,19 @@ export default function ManuelBatch() {
     setNomBatch('')
   }
 
+  // Bascule vers l'optimiseur en gardant les sacs choisis comme "sacs imposés".
+  // L'optimiseur complètera automatiquement pour atteindre la masse cible.
+  function optimiserDepuisSelection() {
+    if (selection.length === 0) { alert('Ajoutez au moins un sac avant d\'optimiser.'); return }
+    const sacsForces = selection.map(({ sac, taken }) => ({ mpFiltre: sac.mp_id, sacId: sac.id, taken: String(Math.round(taken)) }))
+    const masse = Math.round(selection.reduce((s, x) => s + x.taken, 0))
+    localStorage.setItem('optimiseur_prefill', JSON.stringify({
+      recetteId: rcId, masse, nom: nomBatch, sacsForces, restrictions: [],
+    }))
+    localStorage.removeItem('manuel_brouillon')
+    navigate('/optimiseur')
+  }
+
   async function fetchAll() {
     setLoading(true)
     const [{ data: rc }, { data: sacsData }, { data: mpsData }] = await Promise.all([
@@ -60,7 +75,8 @@ export default function ManuelBatch() {
     const map = {}
     for (const mp of (mpsData ?? [])) map[mp.id] = mp
     setMpsMap(map)
-    if (rc?.length && !rcId) setRcId(rc[0].id)
+    // Ne pas écraser une recette déjà choisie (brouillon restauré) — maj fonctionnelle
+    if (rc?.length) setRcId(prev => prev || rc[0].id)
     setLoading(false)
   }
 
@@ -224,6 +240,13 @@ export default function ManuelBatch() {
                   className={`w-28 text-sm border rounded-lg px-3 py-2 bg-white focus:outline-none ${depasse ? 'border-red-400 text-red-600' : 'border-gray-200 focus:border-gray-400'}`}
                 />
                 <span className="text-xs text-gray-400">kg{sac ? ` / ${Math.round(sac.masse_kg ?? 0)} dispo` : ''}</span>
+                {sac && taken > 0 && taken < (sac.masse_kg ?? 0) - 0.5 && (
+                  <button onClick={() => majPrise(i, 'taken', String(Math.round(sac.masse_kg ?? 0)))}
+                    title="Utiliser le sac en entier (lever l'usage partiel)"
+                    className="text-xs px-2 py-1 border border-emerald-200 text-emerald-700 rounded hover:bg-emerald-50">
+                    Sac entier
+                  </button>
+                )}
                 {sac?.composition_override && (
                   <span title="Composition spécifique au sac" className="text-xs bg-purple-50 text-purple-700 px-1.5 py-0.5 rounded">spéc.</span>
                 )}
@@ -298,13 +321,21 @@ export default function ManuelBatch() {
       )}
 
       {selection.length > 0 && (
-        <button
-          onClick={valider}
-          disabled={saving}
-          className="w-full py-3 text-sm bg-gray-900 text-white rounded-xl hover:bg-gray-700 disabled:opacity-40 font-medium"
-        >
-          {saving ? 'Enregistrement…' : '✓ Valider, créer le batch et décompter le stock'}
-        </button>
+        <div className="space-y-2">
+          <button
+            onClick={optimiserDepuisSelection}
+            className="w-full py-2.5 text-sm border border-gray-900 text-gray-900 rounded-xl hover:bg-gray-50 font-medium"
+          >
+            ⚙ Optimiser à partir de cette sélection (compléter automatiquement)
+          </button>
+          <button
+            onClick={valider}
+            disabled={saving}
+            className="w-full py-3 text-sm bg-gray-900 text-white rounded-xl hover:bg-gray-700 disabled:opacity-40 font-medium"
+          >
+            {saving ? 'Enregistrement…' : '✓ Valider, créer le batch et décompter le stock'}
+          </button>
+        </div>
       )}
     </div>
   )
