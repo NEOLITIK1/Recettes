@@ -151,12 +151,13 @@ function optimiser(sacsDispo, mpsMap, recette, masseCible, sacsForces = [], seed
     let tot = 0, pp = 0, pe = 0, alu = 0, blanc = 0, noir = 0, sable = 0, chargeMin = 0
     for (const { mp, taken: t } of sel) {
       if (!mp) continue
+      const tPlast = t * Math.max(0, 1 - ((mp.pct_sable ?? 0) + (mp.pct_charge_minerale ?? 0)) / 100)
       tot       += t
       pp        += t * (mp.pct_pp              ?? 0) / 100
       pe        += t * (mp.pct_pe              ?? 0) / 100
       alu       += t * (mp.pct_alu             ?? 0) / 100
-      blanc     += t * (mp.pct_blanc           ?? 0) / 100
-      noir      += t * (mp.pct_noir            ?? 0) / 100
+      blanc     += tPlast * (mp.pct_blanc      ?? 0) / 100
+      noir      += tPlast * (mp.pct_noir       ?? 0) / 100
       sable     += t * (mp.pct_sable           ?? 0) / 100
       chargeMin += t * (mp.pct_charge_minerale ?? 0) / 100
     }

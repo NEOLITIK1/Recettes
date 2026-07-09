@@ -49,16 +49,20 @@ export function calcComposition(lignes) {
 
   for (const { mp, masse_totale_kg: m } of lignes) {
     if (!mp || !m) continue
+    // Masse plastique de CETTE matière (le reste = sable + charge minérale)
+    const mPlast = m * Math.max(0, 1 - ((mp.pct_sable ?? 0) + (mp.pct_charge_minerale ?? 0)) / 100)
     total       += m
+    // Polymères : exprimés en % de la masse TOTALE de la matière
     pp          += m * (mp.pct_pp ?? 0) / 100
     pe          += m * (mp.pct_pe ?? 0) / 100
     alu         += m * (mp.pct_alu ?? 0) / 100
     autres      += m * (mp.pct_autres ?? 0) / 100
     autresPlast += m * (mp.pct_autres_plastiques ?? 0) / 100
-    blanc       += m * (mp.pct_blanc ?? 0) / 100
-    transp      += m * (mp.pct_transparent ?? 0) / 100
-    noir        += m * (mp.pct_noir ?? 0) / 100
-    autresCoul  += m * (mp.pct_autres_couleurs ?? 0) / 100
+    // Couleurs : exprimées en % de la fraction PLASTIQUE de la matière
+    blanc       += mPlast * (mp.pct_blanc ?? 0) / 100
+    transp      += mPlast * (mp.pct_transparent ?? 0) / 100
+    noir        += mPlast * (mp.pct_noir ?? 0) / 100
+    autresCoul  += mPlast * (mp.pct_autres_couleurs ?? 0) / 100
     sable       += m * (mp.pct_sable ?? 0) / 100
     chargeMin   += m * (mp.pct_charge_minerale ?? 0) / 100
   }
