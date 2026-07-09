@@ -341,7 +341,7 @@ export default function BatchEnCours() {
     if (mpErr) { alert(`Erreur : la matière récupérée n'a pas pu être créée.\n${mpErr.message}`); return }
 
     const { error: sacErr } = await supabase.from('sacs').insert({
-      mp_id: mpId, masse_kg: masse, reference: `Récup-${batch.id}`, statut: 'disponible',
+      mp_id: mpId, masse_kg: masse, reference: `Récup ${batch.nom}`, statut: 'disponible',
     })
     if (sacErr) { alert(`Erreur : le sac récupéré n'a pas pu être ajouté au stock.\n${sacErr.message}`); return }
 
@@ -477,7 +477,7 @@ export default function BatchEnCours() {
     const mpId = `MP_${batch.id}`
     const { error: mpErr } = await supabase.from('matieres_premieres').upsert({
       id: mpId,
-      nom: `Reste batch ${batch.id}`,
+      nom: `Reste ${batch.nom}`,
       type_appro: 'Interne',
       description: `Reste non utilisé du batch ${batch.nom}`,
       cout_par_tonne: coutReste,
@@ -501,7 +501,7 @@ export default function BatchEnCours() {
     const { error: sacErr } = await supabase.from('sacs').insert({
       mp_id: mpId,
       masse_kg: kg,
-      reference: `Reste-${batch.id}`,
+      reference: `Reste ${batch.nom}`,
       statut: 'disponible',
     })
     if (sacErr) {

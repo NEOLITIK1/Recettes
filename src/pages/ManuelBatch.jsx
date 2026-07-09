@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase.js'
-import { calcComposition, calcCout, fmt1, effectiveMp, COMP_PARAMS_FULL } from '../lib/calculs.js'
+import { calcComposition, calcCout, fmt1, effectiveMp, COMP_PARAMS_FULL, codificationBatch } from '../lib/calculs.js'
 import { creerBatchAvecStock, lignePourSac, sacUpdatePourPrise } from '../lib/batchOps.js'
 import EcartBadge from '../components/EcartBadge.jsx'
 import TooltipMp from '../components/TooltipMp.jsx'
@@ -127,7 +127,7 @@ export default function ManuelBatch() {
     setSaving(true)
     // Base 36 du timestamp : unique à la milliseconde, pas de cycle de réutilisation
     const batchId = 'B' + Date.now().toString(36).toUpperCase()
-    const nom = nomBatch.trim() || `Batch ${batchId} — ${recette?.nom ?? ''} (manuel)`
+    const nom = nomBatch.trim() || codificationBatch(recette)
 
     const masseTotaleKg = selection.reduce((s, { taken }) => s + taken, 0)
     const coutParTonne = masseTotaleKg > 0 ? coutTotal / masseTotaleKg * 1000 : 0
@@ -187,7 +187,7 @@ export default function ManuelBatch() {
             <input
               value={nomBatch}
               onChange={e => setNomBatch(e.target.value)}
-              placeholder={`Batch — ${recette?.nom ?? ''}`}
+              placeholder={recette ? codificationBatch(recette) : 'Codification auto'}
               className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-gray-400"
             />
           </div>

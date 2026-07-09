@@ -196,6 +196,30 @@ export function ajustementsPourCible(comp, recette, totalCible) {
   return { polymeres, couleurs, minerals, totalCible: Math.round(T), totalActuel: Math.round(comp.total), rien }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Codification des batchs : "S-260709" = code couleur recette + date AAMMJJ
+// ─────────────────────────────────────────────────────────────────────────────
+// Lettre couleur : champ code_couleur de la recette si renseigné, sinon déduite du nom
+export function codeCouleurRecette(recette) {
+  if (!recette) return 'X'
+  if (recette.code_couleur && String(recette.code_couleur).trim()) {
+    return String(recette.code_couleur).trim().toUpperCase()
+  }
+  const n = (recette.nom || '').toLowerCase()
+  if (n.includes('noir')) return 'N'
+  if (n.includes('gris')) return 'G'
+  if (n.includes('sable') || n.includes('blanc') || n.includes('clair') || n.includes('éclat') || n.includes('eclat')) return 'S'
+  return (recette.nom || 'X').charAt(0).toUpperCase()
+}
+
+export function codificationBatch(recette, date = new Date()) {
+  const d = date instanceof Date ? date : new Date(date)
+  const yy = String(d.getFullYear()).slice(-2)
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return `${codeCouleurRecette(recette)}-${yy}${mm}${dd}`
+}
+
 // Coût total d'un batch en euros
 export function calcCout(lignes) {
   return lignes.reduce((sum, { mp, masse_totale_kg }) => {

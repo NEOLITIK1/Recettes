@@ -27,6 +27,7 @@ export default function MatieresPremières() {
   const [editId, setEditId] = useState(null)
   const [seeded, setSeeded] = useState(false)
   const [recettes, setRecettes] = useState([])
+  const [showArchivees, setShowArchivees] = useState(false)
 
   useEffect(() => { fetchMps() }, [])
 
@@ -89,9 +90,15 @@ export default function MatieresPremières() {
     if (!confirm('Supprimer cette matière ?')) return
     const { error } = await supabase.from('matieres_premieres').delete().eq('id', id)
     if (error) {
-      alert(`Suppression impossible : cette matière est référencée par des sacs ou des batchs.\n${error.message}`)
+      alert(`Suppression impossible : cette matière est référencée par des sacs ou des batchs.\nUtilisez plutôt "Archiver" pour l'épurer de la liste sans casser l'historique.\n\n${error.message}`)
       return
     }
+    fetchMps()
+  }
+
+  async function toggleArchive(mp) {
+    const { error } = await supabase.from('matieres_premieres').update({ archivee: !mp.archivee }).eq('id', mp.id)
+    if (error) { alert(`Erreur : ${error.message}`); return }
     fetchMps()
   }
 
@@ -105,6 +112,9 @@ export default function MatieresPremières() {
     onChange: (e) => setForm(prev => ({ ...prev, [field]: parseFloat(e.target.value) || 0 })),
   })
 
+  const nbArchivees = mps.filter(m => m.archivee).length
+  const mpsAffichees = showArchivees ? mps : mps.filter(m => !m.archivee)
+
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
@@ -113,6 +123,14 @@ export default function MatieresPremières() {
           <p className="text-sm text-gray-500 mt-0.5">Catalogue des matières utilisées en production</p>
         </div>
         <div className="flex gap-2">
+          {nbArchivees > 0 && (
+            <button
+              onClick={() => setShowArchivees(s => !s)}
+              className="px-3 py-2 text-sm border border-gray-200 rounded-lg hover:bg-gray-50 text-gray-600"
+            >
+              {showArchivees ? 'Masquer' : 'Voir'} archivées ({nbArchivees})
+            </button>
+          )}
           {mps.length === 0 && !loading && (
             <button
               onClick={handleSeed}
@@ -160,13 +178,14 @@ export default function MatieresPremières() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
-                {mps.map((mp) => (
-                  <tr key={mp.id} className="hover:bg-gray-50 transition-colors">
+                {mpsAffichees.map((mp) => (
+                  <tr key={mp.id} className={`hover:bg-gray-50 transition-colors ${mp.archivee ? 'opacity-50' : ''}`}>
                     <td className="px-4 py-3 font-mono text-xs text-gray-400">{mp.id}</td>
                     <td className="px-4 py-3">
                       <TooltipMp mp={mp}>
                         <span className="cursor-default font-medium text-gray-900">{mp.nom}</span>
                       </TooltipMp>
+                      {mp.archivee && <span className="ml-2 text-xs bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">Archivée</span>}
                       {(mp.recettes_autorisees ?? []).length > 0 && (
                         <div className="flex gap-1 mt-0.5 flex-wrap">
                           {(mp.recettes_autorisees ?? []).map(rid => (
@@ -196,6 +215,12 @@ export default function MatieresPremières() {
                           className="text-xs px-2 py-1 border border-gray-200 rounded hover:bg-gray-50"
                         >
                           Modifier
+                        </button>
+                        <button
+                          onClick={() => toggleArchive(mp)}
+                          className="text-xs px-2 py-1 border border-gray-200 text-gray-600 rounded hover:bg-gray-50"
+                        >
+                          {mp.archivee ? 'Désarchiver' : 'Archiver'}
                         </button>
                         <button
                           onClick={() => handleDelete(mp.id)}

@@ -15,7 +15,7 @@ const PARAMS = [
 ]
 
 const EMPTY = {
-  id: '', nom: '', version_label: '', parent_recette_id: null, archivee: false,
+  id: '', nom: '', version_label: '', parent_recette_id: null, archivee: false, code_couleur: '',
   pct_pp_cible: 0, pct_pe_cible: 0, pct_alu_cible: 0, pct_autres_cible: 0,
   pct_blanc_cible: 0, pct_transparent_cible: 0, pct_noir_cible: 0,
   pct_autres_coul_cible: 0, pct_ecolithe_cible: 0, pct_charge_minerale_cible: 0,
@@ -231,6 +231,7 @@ export default function Recettes() {
           </div>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Libellé version (optionnel)" value={form.version_label ?? ''} onChange={e => setForm(p => ({...p, version_label: e.target.value}))} placeholder="v2 — 2026" />
+            <Field label="Code couleur (codif batch)" value={form.code_couleur ?? ''} onChange={e => setForm(p => ({...p, code_couleur: e.target.value.toUpperCase()}))} placeholder="S, N, G…" maxLength={3} />
           </div>
           <p className="text-xs font-medium text-gray-500 pt-2 border-t">Cibles plastiques (%)</p>
           <div className="grid grid-cols-3 gap-3">

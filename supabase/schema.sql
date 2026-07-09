@@ -1,4 +1,4 @@
--- NEOLITIK — Schéma Supabase complet (consolidé : inclut migrations v6 à v10)
+-- NEOLITIK — Schéma Supabase complet (consolidé : inclut migrations v6 à v11)
 -- Installation neuve : coller ce seul fichier dans Supabase > SQL Editor > New query > Run
 -- Base existante : exécuter uniquement les migration-vX.sql manquants
 
@@ -22,6 +22,7 @@ create table if not exists matieres_premieres (
   pct_charge_minerale numeric default 0,
   stock_mini_kg numeric default 0,
   recettes_autorisees text[] default '{}',
+  archivee boolean default false,
   created_at timestamptz default now()
 );
 
@@ -42,6 +43,7 @@ create table if not exists recettes_cibles (
   parent_recette_id text,
   version_label text,
   archivee boolean default false,
+  code_couleur text,
   created_at timestamptz default now()
 );
 
@@ -57,6 +59,7 @@ create table if not exists sacs (
   numero_lot_fournisseur text,
   date_reception date,
   emplacement text,
+  commentaire text,
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );
