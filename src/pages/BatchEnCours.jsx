@@ -630,6 +630,8 @@ export default function BatchEnCours() {
   h1 { font-size: 18px; text-align: center; margin: 4px 0 14px; }
   .ident td { font-size: 15px; font-weight: 700; padding: 2px 0; }
   .notice { font-size: 12px; line-height: 1.55; margin-bottom: 12px; }
+  .consigne { border: 2px solid #333; border-radius: 6px; padding: 8px 12px; margin-bottom: 12px; font-size: 13px; line-height: 1.7; }
+  .consigne .titre { font-weight: 700; margin-bottom: 2px; }
   table.silo { width: 100%; border-collapse: collapse; }
   table.silo th, table.silo td { border: 1px solid #333; padding: 6px 8px; font-size: 12px; vertical-align: top; }
   table.silo th { background: #efefef; text-align: left; }
@@ -656,6 +658,13 @@ export default function BatchEnCours() {
   Noter dans remarque les anomalies rencontrées<br>
   Cette feuille est accrochée sur le côté droit du poste de déchargement silo.<br>
   Lorsque le chargement est terminé une copie est remise à l'ordonnancement.
+</div>
+
+<div class="consigne">
+  <div class="titre">Pom'Pot, aluminium et matières orphelines (&lt; 500 kg)</div>
+  ✅ Mettre un peu de matière dans le silo avec <strong>chaque Big Bag</strong>.<br>
+  ✅ Continuer jusqu'à ce que toute la matière soit chargée.<br>
+  ❌ Ne pas mettre toute la matière en une seule fois.
 </div>
 
 <table class="silo">
