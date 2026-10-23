@@ -6,6 +6,35 @@ import EcartBadge from '../components/EcartBadge.jsx'
 import TooltipMp from '../components/TooltipMp.jsx'
 import SuggestionsReappro from '../components/SuggestionsReappro.jsx'
 import SearchableSelect from '../components/SearchableSelect.jsx'
+import { normaliser } from '../lib/recherche.js'
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Diversification des fournisseurs
+// ─────────────────────────────────────────────────────────────────────────────
+// Source d'un sac = son fournisseur s'il est renseigné, sinon sa matière
+// (les MP du type "PP Blanc Berry" / "PP Blanc Veolia" portent le fournisseur dans le nom).
+function cleSource(sac) {
+  const f = normaliser(sac.fournisseur).trim()
+  return f ? `f:${f}` : `mp:${sac.mp_id}`
+}
+
+// Deux matières sont "équivalentes" si leurs compositions polymères + couleurs sont proches
+const SEUIL_MEME_FAMILLE = 15
+function distanceMatiere(a, b) {
+  const d = k => (a?.[k] ?? 0) - (b?.[k] ?? 0)
+  return Math.sqrt(
+    d('pct_pp') ** 2 + d('pct_pe') ** 2 + d('pct_alu') ** 2 +
+    d('pct_blanc') ** 2 + d('pct_transparent') ** 2 + d('pct_noir') ** 2
+  )
+}
+
+// Nombre de sacs déjà retenus qui viennent de la MÊME source pour une matière équivalente
+function nbMemeSource(sac, mp, selection) {
+  const cle = cleSource(sac)
+  return selection.filter(s =>
+    s.sac.id !== sac.id && cleSource(s.sac) === cle && distanceMatiere(mp, s.mp) < SEUIL_MEME_FAMILLE
+  ).length
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Algorithme : sélection greedy diversifiée + phase d'optimisation fine
@@ -101,8 +130,13 @@ function optimiser(sacsDispo, mpsMap, recette, masseCible, sacsForces = [], seed
     // plein nettement mieux placé peut quand même l'emporter.
     const bonusPartiel = sac.statut === 'partiel' ? -25 : 0
 
+    // Mixer les fournisseurs : pour une matière équivalente déjà retenue (ex: 2 PP blanc),
+    // on préfère un sac d'une AUTRE source (1 Berry + 1 Veolia + 1 CAPECO plutôt que 3 Berry).
+    // Pénalité par répétition ; un écart de composition important reste prioritaire.
+    const penaliteFournisseur = nbMemeSource(sac, mp, selectionActuelle) * 12
+
     // Plus c'est BAS, mieux c'est (on minimise)
-    return dist + penaliteConcentration + variation + bonusPartiel
+    return dist + penaliteConcentration + variation + bonusPartiel + penaliteFournisseur
   }
 
   // Pool de sacs candidats : copie qu'on va consommer petit à petit
@@ -260,7 +294,10 @@ function optimiser(sacsDispo, mpsMap, recette, masseCible, sacsForces = [], seed
           }]
         }
         const compTest = compCourante(selTest)
-        const ecartTest = scoreEcart(compTest)
+        // Léger départage en faveur d'une autre source à composition équivalente
+        // (seulement pour un NOUVEAU sac ; agrandir un sac déjà présent n'est pas pénalisé)
+        const departage = existantIdx >= 0 ? 0 : nbMemeSource(sac, mp, selection) * 0.3
+        const ecartTest = scoreEcart(compTest) + departage
 
         if (ecartTest < meilleurScore) {
           meilleurScore = ecartTest
@@ -639,13 +676,12 @@ export default function Optimiseur() {
         <div className="grid grid-cols-2 gap-4 mb-4">
           <div>
             <label className="block text-xs text-gray-500 mb-1">Recette cible</label>
-            <select
+            <SearchableSelect
               value={rcId}
-              onChange={e => setRcId(e.target.value)}
-              className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-gray-400"
-            >
-              {recettes.map(r => <option key={r.id} value={r.id}>{r.nom}</option>)}
-            </select>
+              onChange={setRcId}
+              placeholder="Rechercher une recette…"
+              options={recettes.map(r => ({ value: r.id, label: `${r.nom}${r.version_label ? ` (${r.version_label})` : ''}` }))}
+            />
           </div>
           <div>
             <label className="block text-xs text-gray-500 mb-1">Masse totale souhaitée (kg)</label>
@@ -686,27 +722,25 @@ export default function Optimiseur() {
             return (
               <div key={i} className="flex gap-2 items-center mb-2 flex-wrap">
                 {/* 1. Filtre matière */}
-                <select
+                <SearchableSelect
                   value={f.mpFiltre}
-                  onChange={e => majSacForce(i, 'mpFiltre', e.target.value)}
-                  className="text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-gray-400"
-                >
-                  <option value="">Toutes matières</option>
-                  {mpsListe.map(m => <option key={m.id} value={m.id}>{m.id} — {m.nom}</option>)}
-                </select>
+                  onChange={v => majSacForce(i, 'mpFiltre', v)}
+                  placeholder="Toutes matières"
+                  className="w-56"
+                  options={[
+                    { value: '', label: 'Toutes matières' },
+                    ...mpsListe.map(m => ({ value: m.id, label: `${m.id} — ${m.nom}` })),
+                  ]}
+                />
                 {/* 2. Sac précis (liste des sacs de la matière) */}
-                <TooltipMp mp={sacChoisi ? effectiveMp(mpsMap[sacChoisi.mp_id], sacChoisi.composition_override) : null}>
-                  <select
-                    value={f.sacId}
-                    onChange={e => majSacForce(i, 'sacId', e.target.value)}
-                    className="flex-1 min-w-[220px] text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-gray-400"
-                  >
-                    <option value="">Choisir un sac…</option>
-                    {sacsDeLaMatiere.map(s => (
-                      <option key={s.id} value={s.id}>{mpsMap[s.mp_id]?.nom ?? s.mp_id} · {labelSacOpt(s)}</option>
-                    ))}
-                  </select>
-                </TooltipMp>
+                <SearchableSelect
+                  value={f.sacId}
+                  onChange={v => majSacForce(i, 'sacId', v)}
+                  placeholder="Rechercher un sac…"
+                  className="flex-1 min-w-[220px]"
+                  tooltipMp={sacChoisi ? effectiveMp(mpsMap[sacChoisi.mp_id], sacChoisi.composition_override) : null}
+                  options={sacsDeLaMatiere.map(s => ({ value: s.id, label: `${mpsMap[s.mp_id]?.nom ?? s.mp_id} · ${labelSacOpt(s)}` }))}
+                />
                 {/* 3. Masse à prélever (compteur kg, partiel possible) */}
                 <input
                   type="number" min="1"
@@ -741,13 +775,13 @@ export default function Optimiseur() {
           )}
           {restrictions.map((r, i) => (
             <div key={i} className="flex gap-2 items-center mb-2 flex-wrap">
-              <select
+              <SearchableSelect
                 value={r.mpId}
-                onChange={e => majRestriction(i, 'mpId', e.target.value)}
-                className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-gray-400"
-              >
-                {mpsListe.map(m => <option key={m.id} value={m.id}>{m.id} — {m.nom}</option>)}
-              </select>
+                onChange={v => majRestriction(i, 'mpId', v)}
+                placeholder="Rechercher une matière…"
+                className="flex-1 min-w-[200px]"
+                options={mpsListe.map(m => ({ value: m.id, label: `${m.id} — ${m.nom}` }))}
+              />
               <select
                 value={r.type}
                 onChange={e => majRestriction(i, 'type', e.target.value)}

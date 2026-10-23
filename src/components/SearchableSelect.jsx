@@ -1,8 +1,11 @@
 import { useState, useRef, useEffect } from 'react'
+import { correspond } from '../lib/recherche.js'
+import TooltipMp from './TooltipMp.jsx'
 
 // Sélecteur avec barre de recherche.
 // options : [{ value, label }] · value : valeur sélectionnée · onChange(value)
-export default function SearchableSelect({ options, value, onChange, placeholder = 'Sélectionner…', className = '' }) {
+// tooltipMp (optionnel) : composition affichée au survol du choix actuel (masquée liste ouverte)
+export default function SearchableSelect({ options, value, onChange, placeholder = 'Sélectionner…', className = '', tooltipMp = null }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const ref = useRef(null)
@@ -14,19 +17,22 @@ export default function SearchableSelect({ options, value, onChange, placeholder
     return () => document.removeEventListener('mousedown', onDoc)
   }, [])
 
-  const q = query.trim().toLowerCase()
-  const filtered = q ? options.filter(o => o.label.toLowerCase().includes(q)) : options
+  const filtered = options.filter(o => correspond(query, o.label))
+
+  const bouton = (
+    <button
+      type="button"
+      onClick={() => { setOpen(o => !o); setQuery('') }}
+      className="w-full text-left text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:border-gray-400 flex items-center justify-between gap-2"
+    >
+      <span className={selected ? 'text-gray-900 truncate' : 'text-gray-400'}>{selected ? selected.label : placeholder}</span>
+      <span className="text-gray-400 text-xs flex-shrink-0">▾</span>
+    </button>
+  )
 
   return (
     <div ref={ref} className={`relative ${className}`}>
-      <button
-        type="button"
-        onClick={() => { setOpen(o => !o); setQuery('') }}
-        className="w-full text-left text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:border-gray-400 flex items-center justify-between gap-2"
-      >
-        <span className={selected ? 'text-gray-900 truncate' : 'text-gray-400'}>{selected ? selected.label : placeholder}</span>
-        <span className="text-gray-400 text-xs flex-shrink-0">▾</span>
-      </button>
+      {tooltipMp && !open ? <TooltipMp mp={tooltipMp} className="block">{bouton}</TooltipMp> : bouton}
       {open && (
         <div className="absolute z-50 left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-64 flex flex-col overflow-hidden">
           <input

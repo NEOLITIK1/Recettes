@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase.js'
 import { RECETTES } from '../data/seed.js'
 import Modal from '../components/Modal.jsx'
+import BarreRecherche from '../components/BarreRecherche.jsx'
+import { correspond } from '../lib/recherche.js'
 
 const PARAMS = [
   { key: 'pct_pp_cible',              label: 'PP',              color: 'bg-blue-400' },
@@ -28,6 +30,7 @@ export default function Recettes() {
   const [form, setForm] = useState(EMPTY)
   const [editId, setEditId] = useState(null)
   const [showArchivees, setShowArchivees] = useState(false)
+  const [recherche, setRecherche] = useState('')
 
   useEffect(() => { fetch() }, [])
 
@@ -112,7 +115,8 @@ export default function Recettes() {
   })
 
   // Grouper les recettes par "famille" (id racine ou parent_recette_id)
-  const recettesAffichees = showArchivees ? recettes : recettes.filter(r => !r.archivee)
+  const recettesAffichees = (showArchivees ? recettes : recettes.filter(r => !r.archivee))
+    .filter(r => correspond(recherche, r.nom, r.id, r.version_label, r.code_couleur, r.parent_recette_id))
   const familles = {}
   for (const r of recettesAffichees) {
     const familleId = r.parent_recette_id ?? r.id
@@ -157,8 +161,19 @@ export default function Recettes() {
         </div>
       </div>
 
+      {recettes.length > 0 && (
+        <BarreRecherche
+          value={recherche}
+          onChange={setRecherche}
+          placeholder="Rechercher une recette (nom, ID, version, code couleur…)"
+          className="mb-4 max-w-xl"
+        />
+      )}
+
       {loading ? (
         <p className="text-sm text-gray-400 text-center py-8">Chargement…</p>
+      ) : recherche.trim() && recettesAffichees.length === 0 ? (
+        <p className="text-sm text-gray-400 text-center py-8">Aucune recette ne correspond à « {recherche.trim()} ».</p>
       ) : (
         <div className="space-y-6">
           {Object.entries(familles).map(([familleId, versions]) => (

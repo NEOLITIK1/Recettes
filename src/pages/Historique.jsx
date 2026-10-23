@@ -5,9 +5,13 @@ import { calcComposition, calcCout, fmt1, effectiveMp, COMP_PARAMS_FULL, snapsho
 import { restaurerSacsConsommes } from '../lib/batchOps.js'
 import EcartBadge from '../components/EcartBadge.jsx'
 import Modal from '../components/Modal.jsx'
+import BarreRecherche from '../components/BarreRecherche.jsx'
+import SearchableSelect from '../components/SearchableSelect.jsx'
+import { correspond } from '../lib/recherche.js'
 
 export default function Historique() {
   const [batches, setBatches] = useState([])
+  const [recherche, setRecherche] = useState('')
   const [recettes, setRecettes] = useState([])
   const [mpsMap, setMpsMap] = useState({})
   const [loading, setLoading] = useState(true)
@@ -237,6 +241,17 @@ export default function Historique() {
 
   const COMP_PARAMS = COMP_PARAMS_FULL
 
+  // Recherche : code/nom du batch, recette, date, notes, matières et lots/références des sacs
+  const batchesAffiches = batches.filter(b => {
+    const rc = recettes.find(r => r.id === b.recette_id)
+    const dateFr = b.date_creation ? new Date(b.date_creation).toLocaleDateString('fr-FR') : ''
+    const infosLignes = b.lignes.flatMap(l => [
+      mpsMap[l.mp_id]?.nom, l.mp_id,
+      ...(Array.isArray(l.sacs_consommes) ? l.sacs_consommes.flatMap(e => [e.reference, e.numero_lot_fournisseur, e.fournisseur]) : []),
+    ])
+    return correspond(recherche, b.nom, b.id, rc?.nom, b.notes, b.date_creation, dateFr, ...infosLignes)
+  })
+
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
@@ -277,11 +292,25 @@ export default function Historique() {
         ))}
       </div>
 
+      {batches.length > 0 && (
+        <BarreRecherche
+          value={recherche}
+          onChange={setRecherche}
+          placeholder="Rechercher un batch (code, recette, date, matière, n° lot, note…)"
+          className="mb-4 max-w-xl"
+        />
+      )}
+
       {loading ? (
         <p className="text-sm text-gray-400 text-center py-8">Chargement…</p>
+      ) : recherche.trim() && batchesAffiches.length === 0 ? (
+        <p className="text-sm text-gray-400 text-center py-8">Aucun batch ne correspond à « {recherche.trim()} ».</p>
       ) : (
         <div className="space-y-3">
-          {batches.map(batch => {
+          {recherche.trim() && (
+            <p className="text-xs text-gray-500">{batchesAffiches.length} batch{batchesAffiches.length !== 1 ? 's' : ''} trouvé{batchesAffiches.length !== 1 ? 's' : ''}</p>
+          )}
+          {batchesAffiches.map(batch => {
             const rc = recettes.find(r => r.id === batch.recette_id)
             const lignesEnrichies = batch.lignes.map(l => ({ mp: effectiveMp(mpsMap[l.mp_id], l.composition_snapshot), masse_totale_kg: l.masse_totale_kg }))
             const comp = calcComposition(lignesEnrichies)
@@ -446,11 +475,15 @@ export default function Historique() {
                 <label className="block text-xs text-gray-500 mb-1">
                   Recette (étiquette) <span className="text-gray-400 font-normal">— détermine le tonnage par recette dans les stats</span>
                 </label>
-                <select value={editForm.recette_id} onChange={e => setEditForm(f => ({ ...f, recette_id: e.target.value }))}
-                  className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2">
-                  <option value="">— Aucune —</option>
-                  {recettes.map(r => <option key={r.id} value={r.id}>{r.nom}{r.version_label ? ` (${r.version_label})` : ''}</option>)}
-                </select>
+                <SearchableSelect
+                  value={editForm.recette_id}
+                  onChange={v => setEditForm(f => ({ ...f, recette_id: v }))}
+                  placeholder="Rechercher une recette…"
+                  options={[
+                    { value: '', label: '— Aucune —' },
+                    ...recettes.map(r => ({ value: r.id, label: `${r.nom}${r.version_label ? ` (${r.version_label})` : ''}` })),
+                  ]}
+                />
               </div>
               <div>
                 <div className="flex items-center justify-between mb-2">
@@ -460,11 +493,13 @@ export default function Historique() {
                 <div className="space-y-2">
                   {editForm.lignes.map((l, i) => (
                     <div key={i} className="flex gap-2 items-center">
-                      <select value={l.mp_id} onChange={e => majEditLigne(i, 'mp_id', e.target.value)}
-                        className="flex-1 min-w-[160px] text-sm border border-gray-200 rounded-lg px-2 py-1.5">
-                        <option value="">Choisir…</option>
-                        {mpsListe.map(m => <option key={m.id} value={m.id}>{m.id} — {m.nom}</option>)}
-                      </select>
+                      <SearchableSelect
+                        value={l.mp_id}
+                        onChange={v => majEditLigne(i, 'mp_id', v)}
+                        placeholder="Rechercher une matière…"
+                        className="flex-1 min-w-[160px]"
+                        options={mpsListe.map(m => ({ value: m.id, label: `${m.id} — ${m.nom}` }))}
+                      />
                       <input type="number" min="1" value={l.masse} onChange={e => majEditLigne(i, 'masse', e.target.value)}
                         placeholder="kg" className="w-24 text-sm border border-gray-200 rounded-lg px-2 py-1.5" />
                       <span className="text-xs text-gray-400">kg</span>

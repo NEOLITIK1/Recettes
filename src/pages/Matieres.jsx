@@ -4,6 +4,8 @@ import { MATIERES } from '../data/seed.js'
 import Modal from '../components/Modal.jsx'
 import CompositionBar from '../components/CompositionBar.jsx'
 import TooltipMp from '../components/TooltipMp.jsx'
+import BarreRecherche from '../components/BarreRecherche.jsx'
+import { correspond } from '../lib/recherche.js'
 
 const TYPE_STYLES = {
   'Interne':  'bg-emerald-50 text-emerald-700',
@@ -28,6 +30,8 @@ export default function MatieresPremières() {
   const [seeded, setSeeded] = useState(false)
   const [recettes, setRecettes] = useState([])
   const [showArchivees, setShowArchivees] = useState(false)
+  const [recherche, setRecherche] = useState('')
+  const [rechercheRc, setRechercheRc] = useState('') // filtre des recettes autorisées dans la fiche
 
   useEffect(() => { fetchMps() }, [])
 
@@ -113,7 +117,8 @@ export default function MatieresPremières() {
   })
 
   const nbArchivees = mps.filter(m => m.archivee).length
-  const mpsAffichees = showArchivees ? mps : mps.filter(m => !m.archivee)
+  const mpsAffichees = (showArchivees ? mps : mps.filter(m => !m.archivee))
+    .filter(m => correspond(recherche, m.id, m.nom, m.description, m.type_appro, ...(m.recettes_autorisees ?? [])))
 
   return (
     <div>
@@ -154,12 +159,25 @@ export default function MatieresPremières() {
         </div>
       )}
 
+      {mps.length > 0 && (
+        <BarreRecherche
+          value={recherche}
+          onChange={setRecherche}
+          placeholder="Rechercher une matière (nom, ID, type, description, recette…)"
+          className="mb-4 max-w-xl"
+        />
+      )}
+
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         {loading ? (
           <div className="p-8 text-center text-gray-400 text-sm">Chargement…</div>
         ) : mps.length === 0 ? (
           <div className="p-8 text-center text-gray-400 text-sm">
             Aucune matière première. Cliquez sur "Importer données initiales" ou "Nouvelle MP".
+          </div>
+        ) : mpsAffichees.length === 0 ? (
+          <div className="p-8 text-center text-gray-400 text-sm">
+            Aucune matière ne correspond à « {recherche.trim()} ».
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -309,7 +327,10 @@ export default function MatieresPremières() {
               <p className="text-xs text-gray-400 italic">Aucune recette — créez-en d'abord dans l'onglet Recettes.</p>
             ) : (
               <div className="space-y-1.5">
-                {recettes.map(rc => {
+                {recettes.length > 5 && (
+                  <BarreRecherche value={rechercheRc} onChange={setRechercheRc} placeholder="Filtrer les recettes…" className="mb-2" />
+                )}
+                {recettes.filter(rc => correspond(rechercheRc, rc.nom, rc.id)).map(rc => {
                   const checked = (form.recettes_autorisees ?? []).includes(rc.id)
                   return (
                     <label key={rc.id} className="flex items-center gap-2 cursor-pointer">

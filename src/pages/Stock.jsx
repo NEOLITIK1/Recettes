@@ -5,6 +5,8 @@ import Modal from '../components/Modal.jsx'
 import TooltipMp from '../components/TooltipMp.jsx'
 import VueParMatiere from '../components/VueParMatiere.jsx'
 import SearchableSelect from '../components/SearchableSelect.jsx'
+import BarreRecherche from '../components/BarreRecherche.jsx'
+import { correspond } from '../lib/recherche.js'
 
 const STATUT_STYLES = {
   disponible: 'bg-emerald-50 text-emerald-700',
@@ -44,6 +46,7 @@ export default function Stock() {
   const [form, setForm] = useState(newForm())
   const [editId, setEditId] = useState(null)
   const [filtre, setFiltre] = useState('stock')
+  const [recherche, setRecherche] = useState('')
   const [showCompoOverride, setShowCompoOverride] = useState(false)
 
   // Scindage d'un sac en plusieurs sacs réels (ex: batch récupéré puis pesé)
@@ -227,11 +230,25 @@ export default function Stock() {
   }
 
   const sacsAffiches = sacs.filter(s => {
-    if (filtre === 'tous') return true
-    if (filtre === 'alertes') return mpsEnAlerteIds.has(s.mp_id) && s.statut !== 'consomme'
-    if (filtre === 'stock') return s.statut !== 'consomme' // disponibles + partiels ensemble
-    return s.statut === filtre
+    const okFiltre =
+      filtre === 'tous' ? true
+      : filtre === 'alertes' ? (mpsEnAlerteIds.has(s.mp_id) && s.statut !== 'consomme')
+      : filtre === 'stock' ? s.statut !== 'consomme' // disponibles + partiels ensemble
+      : s.statut === filtre
+    return okFiltre && correspond(recherche,
+      getMpNom(s.mp_id), s.mp_id, s.reference, s.fournisseur,
+      s.numero_lot_fournisseur, s.emplacement, s.commentaire)
   })
+
+  // Totaux des sacs affichés, détaillés par matière (ex: "PP Blanc Berry : 3 sacs, 2,4 t")
+  const totalAffichesKg = sacsAffiches.reduce((a, s) => a + (s.masse_kg ?? 0), 0)
+  const parMatiere = Object.values(sacsAffiches.reduce((acc, s) => {
+    const e = acc[s.mp_id] ?? (acc[s.mp_id] = { mpId: s.mp_id, nom: getMpNom(s.mp_id), nb: 0, kg: 0 })
+    e.nb++
+    e.kg += s.masse_kg ?? 0
+    return acc
+  }, {})).sort((a, b) => b.kg - a.kg)
+  const fmtKg = kg => kg >= 1000 ? (kg / 1000).toLocaleString('fr-FR', { maximumFractionDigits: 2 }) + ' t' : Math.round(kg).toLocaleString('fr-FR') + ' kg'
   const sacsDispo = sacs.filter(s => s.statut !== 'consomme')
   const totalKg = sacsDispo.reduce((a, s) => a + (s.masse_kg ?? 0), 0)
   const nbMps = new Set(sacsDispo.map(s => s.mp_id)).size
@@ -302,13 +319,39 @@ export default function Stock() {
             {label}
           </button>
         ))}
+        <BarreRecherche
+          value={recherche}
+          onChange={setRecherche}
+          placeholder="Matière, référence, fournisseur, lot, emplacement…"
+          className="flex-1 min-w-[240px] sm:ml-auto sm:max-w-md"
+        />
       </div>
+
+      {/* Totaux des résultats (nombre de sacs + tonnage, par matière) */}
+      {!loading && recherche.trim() && sacsAffiches.length > 0 && (
+        <div className="bg-blue-50 border border-blue-100 rounded-xl p-4 mb-4">
+          <p className="text-sm text-blue-900">
+            <strong>{sacsAffiches.length} sac{sacsAffiches.length !== 1 ? 's' : ''}</strong> · <strong>{fmtKg(totalAffichesKg)}</strong>
+            <span className="text-blue-700/80"> pour « {recherche.trim()} »</span>
+          </p>
+          {parMatiere.length > 1 && (
+            <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1">
+              {parMatiere.map(m => (
+                <div key={m.mpId} className="flex justify-between text-xs text-blue-900">
+                  <span className="truncate">{m.nom}</span>
+                  <span className="tabular-nums whitespace-nowrap ml-2">{m.nb} sac{m.nb !== 1 ? 's' : ''} · {fmtKg(m.kg)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         {loading ? (
           <p className="text-sm text-gray-400 text-center p-8">Chargement…</p>
         ) : sacsAffiches.length === 0 ? (
-          <p className="text-sm text-gray-400 text-center p-8">Aucun sac dans cette catégorie.</p>
+          <p className="text-sm text-gray-400 text-center p-8">{recherche.trim() ? `Aucun sac ne correspond à « ${recherche.trim()} ».` : 'Aucun sac dans cette catégorie.'}</p>
         ) : (
           <table className="w-full text-sm">
             <thead>

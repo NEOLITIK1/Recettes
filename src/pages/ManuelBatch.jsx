@@ -4,8 +4,8 @@ import { supabase } from '../lib/supabase.js'
 import { calcComposition, calcCout, fmt1, effectiveMp, COMP_PARAMS_FULL, codificationBatch } from '../lib/calculs.js'
 import { creerBatchAvecStock, lignePourSac, sacUpdatePourPrise } from '../lib/batchOps.js'
 import EcartBadge from '../components/EcartBadge.jsx'
-import TooltipMp from '../components/TooltipMp.jsx'
 import SuggestionsReappro from '../components/SuggestionsReappro.jsx'
+import SearchableSelect from '../components/SearchableSelect.jsx'
 
 export default function ManuelBatch() {
   const [recettes, setRecettes] = useState([])
@@ -87,7 +87,9 @@ export default function ManuelBatch() {
     const mp = mpsMap[sac.mp_id]
     const ref = sac.reference || (sac.numero_lot_fournisseur ? `N°${sac.numero_lot_fournisseur}` : sac.id.slice(0, 8))
     const fourn = sac.fournisseur ? ` · ${sac.fournisseur}` : ''
-    return `${ref} — ${mp?.nom ?? sac.mp_id} — ${Math.round(sac.masse_kg ?? 0)} kg${fourn}`
+    const part = sac.statut === 'partiel' ? ' · partiel' : ''
+    const emp = sac.emplacement ? ` · 📍${sac.emplacement}` : ''
+    return `${ref} — ${mp?.nom ?? sac.mp_id} — ${Math.round(sac.masse_kg ?? 0)} kg${fourn}${part}${emp}`
   }
 
   function ajouterPrise() {
@@ -190,13 +192,12 @@ export default function ManuelBatch() {
         <div className="grid grid-cols-2 gap-4 mb-4">
           <div>
             <label className="block text-xs text-gray-500 mb-1">Recette cible</label>
-            <select
+            <SearchableSelect
               value={rcId}
-              onChange={e => setRcId(e.target.value)}
-              className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:border-gray-400"
-            >
-              {recettes.map(r => <option key={r.id} value={r.id}>{r.nom}</option>)}
-            </select>
+              onChange={setRcId}
+              placeholder="Rechercher une recette…"
+              options={recettes.map(r => ({ value: r.id, label: `${r.nom}${r.version_label ? ` (${r.version_label})` : ''}` }))}
+            />
           </div>
           <div>
             <label className="block text-xs text-gray-500 mb-1">Nom du batch (optionnel)</label>
@@ -220,18 +221,16 @@ export default function ManuelBatch() {
             const depasse = sac && taken > (sac.masse_kg ?? 0) + 0.5
             return (
               <div key={i} className="flex gap-2 items-center flex-wrap border border-gray-100 rounded-lg p-2 bg-gray-50">
-                <TooltipMp mp={sac ? effectiveMp(mpsMap[sac.mp_id], sac.composition_override) : null}>
-                  <select
-                    value={p.sacId}
-                    onChange={e => majPrise(i, 'sacId', e.target.value)}
-                    className="flex-1 min-w-[280px] text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:border-gray-400"
-                  >
-                    <option value="">Sélectionner un sac…</option>
-                    {sacs
-                      .filter(s => s.id === p.sacId || !sacsDejaPris.has(s.id))
-                      .map(s => <option key={s.id} value={s.id}>{labelSac(s)}</option>)}
-                  </select>
-                </TooltipMp>
+                <SearchableSelect
+                  value={p.sacId}
+                  onChange={v => majPrise(i, 'sacId', v)}
+                  placeholder="Rechercher un sac (matière, réf., fournisseur…)"
+                  className="flex-1 min-w-[280px]"
+                  tooltipMp={sac ? effectiveMp(mpsMap[sac.mp_id], sac.composition_override) : null}
+                  options={sacs
+                    .filter(s => s.id === p.sacId || !sacsDejaPris.has(s.id))
+                    .map(s => ({ value: s.id, label: labelSac(s) }))}
+                />
                 <input
                   type="number" min="1"
                   value={p.taken}

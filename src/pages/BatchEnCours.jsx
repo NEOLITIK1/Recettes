@@ -6,10 +6,15 @@ import { restaurerSacsConsommes, lignesRestaurables, lignePourSac, sacUpdatePour
 import EcartBadge from '../components/EcartBadge.jsx'
 import Modal from '../components/Modal.jsx'
 import TooltipMp from '../components/TooltipMp.jsx'
+import BarreRecherche from '../components/BarreRecherche.jsx'
+import SearchableSelect from '../components/SearchableSelect.jsx'
+import { correspond } from '../lib/recherche.js'
 
 export default function BatchEnCours() {
   const [batches, setBatches] = useState([])
   const [recettes, setRecettes] = useState([])
+  const [recherche, setRecherche] = useState('')
+  const [rechercheRecupRc, setRechercheRecupRc] = useState('')
   const [mpsMap, setMpsMap] = useState({})
   const [loading, setLoading] = useState(true)
   const [openConsoHist, setOpenConsoHist] = useState({}) // batchId → bool
@@ -699,6 +704,19 @@ export default function BatchEnCours() {
 
   const COMP_PARAMS = COMP_PARAMS_FULL
 
+  // Recherche : nom/code du batch, recette, matières et lots/références des sacs
+  const batchesAffiches = batches.filter(b => {
+    const rc = recettes.find(r => r.id === b.recette_id)
+    const infosLignes = b.lignes.flatMap(l => [
+      mpsMap[l.mp_id]?.nom, l.mp_id,
+      ...(Array.isArray(l.sacs_consommes) ? l.sacs_consommes.flatMap(e => [e.reference, e.numero_lot_fournisseur, e.fournisseur]) : []),
+    ])
+    return correspond(recherche, b.nom, b.id, rc?.nom, b.notes, ...infosLignes)
+  })
+
+  // Libellé d'un sac dans les listes de choix (matière + réf + masse + fournisseur)
+  const optionSac = s => ({ value: s.id, label: labelSacStock(s) })
+
   return (
     <div>
       <div className="mb-6">
@@ -706,15 +724,26 @@ export default function BatchEnCours() {
         <p className="text-sm text-gray-500 mt-0.5">{batches.length} batch{batches.length !== 1 ? 's' : ''} actif{batches.length !== 1 ? 's' : ''}</p>
       </div>
 
+      {batches.length > 0 && (
+        <BarreRecherche
+          value={recherche}
+          onChange={setRecherche}
+          placeholder="Rechercher un batch (code, recette, matière, n° lot…)"
+          className="mb-4 max-w-xl"
+        />
+      )}
+
       {loading ? (
         <p className="text-sm text-gray-400 text-center py-8">Chargement…</p>
       ) : batches.length === 0 ? (
         <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-400 text-sm">
           Aucun batch en cours. Créez-en un via l'Optimiseur ou la Composition manuelle.
         </div>
+      ) : batchesAffiches.length === 0 ? (
+        <p className="text-sm text-gray-400 text-center py-8">Aucun batch ne correspond à « {recherche.trim()} ».</p>
       ) : (
         <div className="space-y-6">
-          {batches.map(batch => {
+          {batchesAffiches.map(batch => {
             const rc = recettes.find(r => r.id === batch.recette_id)
             const lignesEnrichies = batch.lignes.map(l => ({ mp: effectiveMp(mpsMap[l.mp_id], l.composition_snapshot), masse_totale_kg: l.masse_totale_kg }))
             const comp = calcComposition(lignesEnrichies)
@@ -951,18 +980,14 @@ export default function BatchEnCours() {
             const dejaPris = new Set(ajoutPrises.map(x => x.sacId).filter(Boolean))
             return (
               <div key={i} className="flex gap-2 items-center flex-wrap">
-                <TooltipMp mp={sac ? effectiveMp(mpsMap[sac.mp_id], sac.composition_override) : null}>
-                  <select
-                    value={p.sacId}
-                    onChange={e => majAjoutPrise(i, 'sacId', e.target.value)}
-                    className="flex-1 min-w-[220px] text-sm border border-gray-200 rounded-lg px-3 py-2"
-                  >
-                    <option value="">Sélectionner un sac…</option>
-                    {sacsStock
-                      .filter(s => s.id === p.sacId || !dejaPris.has(s.id))
-                      .map(s => <option key={s.id} value={s.id}>{labelSacStock(s)}</option>)}
-                  </select>
-                </TooltipMp>
+                <SearchableSelect
+                  value={p.sacId}
+                  onChange={v => majAjoutPrise(i, 'sacId', v)}
+                  placeholder="Rechercher un sac…"
+                  className="flex-1 min-w-[220px]"
+                  tooltipMp={sac ? effectiveMp(mpsMap[sac.mp_id], sac.composition_override) : null}
+                  options={sacsStock.filter(s => s.id === p.sacId || !dejaPris.has(s.id)).map(optionSac)}
+                />
                 <input
                   type="number" min="1"
                   value={p.taken}
@@ -1095,8 +1120,12 @@ export default function BatchEnCours() {
               {recettes.filter(r => !r.archivee).length === 0 ? (
                 <p className="text-xs text-gray-400 italic">Aucune recette disponible.</p>
               ) : (
+                <>
+                {recettes.filter(r => !r.archivee).length > 5 && (
+                  <BarreRecherche value={rechercheRecupRc} onChange={setRechercheRecupRc} placeholder="Filtrer les recettes…" className="mb-2" />
+                )}
                 <div className="space-y-1.5 max-h-44 overflow-y-auto border border-gray-100 rounded-lg p-2">
-                  {recettes.filter(r => !r.archivee).map(rc => {
+                  {recettes.filter(r => !r.archivee && correspond(rechercheRecupRc, r.nom, r.id)).map(rc => {
                     const checked = recupForm.recettes.includes(rc.id)
                     return (
                       <label key={rc.id} className="flex items-center gap-2 cursor-pointer">
@@ -1112,6 +1141,7 @@ export default function BatchEnCours() {
                     )
                   })}
                 </div>
+                </>
               )}
               <p className="text-xs text-gray-400 mt-1">Laissez vide pour autoriser dans toutes les recettes.</p>
             </div>
@@ -1230,16 +1260,17 @@ export default function BatchEnCours() {
               )}
               <div>
                 <label className="block text-xs text-gray-500 mb-1">Sac de remplacement</label>
-                <TooltipMp mp={nouveauSac ? effectiveMp(mpsMap[nouveauSac.mp_id], nouveauSac.composition_override) : null}>
-                  <select value={substSacId} onChange={e => {
-                    const s = sacsStockById[e.target.value]
-                    setSubstSacId(e.target.value)
+                <SearchableSelect
+                  value={substSacId}
+                  onChange={v => {
+                    const s = sacsStockById[v]
+                    setSubstSacId(v)
                     if (s) setSubstMasse(String(Math.round(Math.min(s.masse_kg ?? 0, modalSubst.masse_totale_kg ?? 0))))
-                  }} className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2">
-                    <option value="">Sélectionner un sac…</option>
-                    {sacsStock.map(s => <option key={s.id} value={s.id}>{labelSacStock(s)}</option>)}
-                  </select>
-                </TooltipMp>
+                  }}
+                  placeholder="Rechercher un sac…"
+                  tooltipMp={nouveauSac ? effectiveMp(mpsMap[nouveauSac.mp_id], nouveauSac.composition_override) : null}
+                  options={sacsStock.map(optionSac)}
+                />
               </div>
               <div>
                 <label className="block text-xs text-gray-500 mb-1">Masse à prélever (kg)</label>

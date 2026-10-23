@@ -1,7 +1,8 @@
 import { useState } from 'react'
 
 // Fenêtre informative au survol d'une MP — affiche la composition complète
-export default function TooltipMp({ mp, children }) {
+// className : mise en page du conteneur (inline-block par défaut, "block" pour occuper la largeur)
+export default function TooltipMp({ mp, children, className = 'inline-block' }) {
   const [visible, setVisible] = useState(false)
 
   if (!mp) return children
@@ -20,7 +21,7 @@ export default function TooltipMp({ mp, children }) {
 
   return (
     <div
-      className="relative inline-block"
+      className={`relative ${className}`}
       onMouseEnter={() => setVisible(true)}
       onMouseLeave={() => setVisible(false)}
     >
