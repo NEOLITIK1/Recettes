@@ -6,6 +6,7 @@ import { creerBatchAvecStock, lignePourSac, sacUpdatePourPrise } from '../lib/ba
 import EcartBadge from '../components/EcartBadge.jsx'
 import SuggestionsReappro from '../components/SuggestionsReappro.jsx'
 import SearchableSelect from '../components/SearchableSelect.jsx'
+import { lieuSac } from '../lib/plan.js'
 
 export default function ManuelBatch() {
   const [recettes, setRecettes] = useState([])
@@ -88,7 +89,7 @@ export default function ManuelBatch() {
     const ref = sac.reference || (sac.numero_lot_fournisseur ? `N°${sac.numero_lot_fournisseur}` : sac.id.slice(0, 8))
     const fourn = sac.fournisseur ? ` · ${sac.fournisseur}` : ''
     const part = sac.statut === 'partiel' ? ' · partiel' : ''
-    const emp = sac.emplacement ? ` · 📍${sac.emplacement}` : ''
+    const emp = lieuSac(sac) ? ` · 📍${lieuSac(sac)}` : ''
     return `${ref} — ${mp?.nom ?? sac.mp_id} — ${Math.round(sac.masse_kg ?? 0)} kg${fourn}${part}${emp}`
   }
 
@@ -166,6 +167,7 @@ export default function ManuelBatch() {
     setSaving(false)
     if (err) {
       alert(`Erreur : le batch n'a pas pu être créé (stock inchangé).\n${err.message}`)
+      fetchAll()
       return
     }
     setSaved(true)

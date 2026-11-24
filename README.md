@@ -28,7 +28,7 @@ npm install
 2. Copier l'URL et la clé anon (Settings → API)
 3. Dans SQL Editor → New query, coller le contenu de `supabase/schema.sql` et cliquer Run
 
-> **Installation neuve** : `schema.sql` est consolidé et suffit à lui seul.
+> **Installation neuve** : `schema.sql` est consolidé jusqu'à la v11 ; exécuter ensuite `migration-v12.sql` (plan de stockage).
 > **Base existante** : exécuter uniquement les `supabase/migration-vX.sql` pas encore appliqués (ils sont idempotents — sans risque si relancés).
 
 ### 3. Configurer les variables d'environnement
@@ -112,7 +112,7 @@ src/
     └── Historique.jsx    # Batchs clôturés + export CSV
 supabase/
 ├── schema.sql            # Schéma complet (installation neuve)
-└── migration-v6→v9.sql   # Migrations incrémentales (base existante)
+└── migration-v6→v12.sql   # Migrations incrémentales (base existante)
 ```
 
 ---

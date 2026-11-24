@@ -7,6 +7,7 @@ import TooltipMp from '../components/TooltipMp.jsx'
 import SuggestionsReappro from '../components/SuggestionsReappro.jsx'
 import SearchableSelect from '../components/SearchableSelect.jsx'
 import { normaliser } from '../lib/recherche.js'
+import { lieuSac } from '../lib/plan.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Diversification des fournisseurs
@@ -518,7 +519,7 @@ export default function Optimiseur() {
   function labelSacOpt(sac) {
     const ref = sac.reference || (sac.numero_lot_fournisseur ? `N°${sac.numero_lot_fournisseur}` : sac.id.slice(0, 8))
     const part = sac.statut === 'partiel' ? ' · partiel' : ''
-    const emp = sac.emplacement ? ` · 📍${sac.emplacement}` : ''
+    const emp = lieuSac(sac) ? ` · 📍${lieuSac(sac)}` : ''
     return `${ref} — ${Math.round(sac.masse_kg ?? 0)} kg${sac.fournisseur ? ' · ' + sac.fournisseur : ''}${part}${emp}`
   }
 
@@ -597,7 +598,7 @@ export default function Optimiseur() {
     const masseTotale = selEff.reduce((s, { taken }) => s + taken, 0)
     const coutParTonne = masseTotale > 0 ? coutTotal / masseTotale * 1000 : 0
 
-    // Batch + lignes + stock en une transaction (lib partagée, RPC v9 avec fallback).
+    // Batch + lignes + stock en une transaction (lib partagée, fonction valider_batch).
     // Chaque ligne fige sa composition effective et trace son sac source pour
     // permettre une restauration fidèle (annulation, repasser en optimiseur…).
     const batch = {
@@ -634,6 +635,7 @@ export default function Optimiseur() {
     if (err) {
       setSaving(false)
       alert(`Erreur : le batch n'a pas pu être créé (stock inchangé).\n${err.message}`)
+      fetchAll()
       return
     }
 
@@ -907,7 +909,7 @@ export default function Optimiseur() {
                       )}
                     </td>
                     <td className="px-4 py-3 text-xs text-gray-500">
-                      {sac.emplacement ? <span>📍 {sac.emplacement}</span> : '—'}
+                      {lieuSac(sac) ? <span>📍 {lieuSac(sac)}</span> : '—'}
                     </td>
                     <td className="px-4 py-3 text-right">
                       <div className="flex items-center justify-end gap-1">

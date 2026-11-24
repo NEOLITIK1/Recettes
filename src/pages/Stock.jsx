@@ -6,7 +6,9 @@ import TooltipMp from '../components/TooltipMp.jsx'
 import VueParMatiere from '../components/VueParMatiere.jsx'
 import SearchableSelect from '../components/SearchableSelect.jsx'
 import BarreRecherche from '../components/BarreRecherche.jsx'
+import PlanStock from '../components/PlanStock.jsx'
 import { correspond } from '../lib/recherche.js'
+import { MAX_PILE, lieuSac, optionsRangement, idsASortir, fusionnerSacs } from '../lib/plan.js'
 
 const STATUT_STYLES = {
   disponible: 'bg-emerald-50 text-emerald-700',
@@ -24,6 +26,12 @@ const COMPO_KEYS = [
   ['pct_charge_minerale', '% Charge minérale'],
 ]
 
+// Un sac du lot. rangement : '' = hors plan (emplacement libre), 'R:A' = rangée A,
+// 'S:<id>' = sur la pile d'un sac existant
+function newLigne() {
+  return { masse_kg: '', reference: '', taille: 'grand', rangement: '', emplacement: '', commentaire: '' }
+}
+
 // Champs communs à un lot + une liste de sacs (masse/réf/emplacement/commentaire par sac)
 function newForm() {
   return {
@@ -34,7 +42,7 @@ function newForm() {
     numero_lot_fournisseur: '',
     date_reception: '',
     composition_override: null,
-    lignes: [{ masse_kg: '', reference: '', emplacement: '', commentaire: '' }],
+    lignes: [newLigne()],
   }
 }
 
@@ -53,16 +61,25 @@ export default function Stock() {
   const [modalSplit, setModalSplit] = useState(null) // sac
   const [splitPoids, setSplitPoids] = useState([''])
 
+  // Plan de stockage
+  const [aSortir, setASortir] = useState(new Set()) // sacs réservés par un batch, pas encore sortis
+  const [caseOuverte, setCaseOuverte] = useState(null) // { rangee, place|null }
+  const [placement, setPlacement] = useState({ sacId: '', taille: 'grand' })
+  const [saving, setSaving] = useState(false)
+
   useEffect(() => { fetchAll() }, [])
 
   async function fetchAll() {
     setLoading(true)
-    const [{ data: sacsData }, { data: mpsData }] = await Promise.all([
+    const [{ data: sacsData }, { data: mpsData }, { data: lignesData }, { data: ranges }] = await Promise.all([
       supabase.from('sacs').select('*').order('created_at', { ascending: false }),
       supabase.from('matieres_premieres').select('*').order('id'),
+      supabase.from('batch_lignes').select('sacs_consommes, sortie_at, batches!inner(statut)').is('sortie_at', null).eq('batches.statut', 'en_cours'),
+      supabase.from('sacs').select('*').not('rangee', 'is', null),
     ])
-    setSacs(sacsData ?? [])
+    setSacs(fusionnerSacs(sacsData, ranges))
     setMps(mpsData ?? [])
+    setASortir(idsASortir(lignesData))
     setLoading(false)
   }
 
@@ -104,6 +121,8 @@ export default function Stock() {
       lignes: [{
         masse_kg: sac.masse_kg ?? '',
         reference: sac.reference ?? '',
+        taille: sac.taille ?? 'grand',
+        rangement: sac.rangee ? `R:${sac.rangee}` : '',
         emplacement: sac.emplacement ?? '',
         commentaire: sac.commentaire ?? '',
       }],
@@ -114,10 +133,28 @@ export default function Stock() {
   }
 
   function majLigneSac(i, field, val) {
-    setForm(p => ({ ...p, lignes: p.lignes.map((l, idx) => idx === i ? { ...l, [field]: val } : l) }))
+    setForm(p => ({ ...p, lignes: p.lignes.map((l, idx) => {
+      if (idx !== i) return l
+      // Une pile ne se complète qu'avec un petit sac
+      if (field === 'taille' && val === 'grand' && l.rangement.startsWith('S:')) return { ...l, taille: val, rangement: '' }
+      return { ...l, [field]: val }
+    }) }))
+  }
+  // Choix de rangement d'un sac du formulaire (+ sa rangée actuelle en modification)
+  function choixRangement(l) {
+    const avant = editId ? sacs.find(s => s.id === editId) : null
+    const options = optionsRangement(sacs, l.taille).filter(o => o.value !== `S:${editId}`)
+    const actuel = avant?.rangee
+      ? [{ value: `R:${avant.rangee}`, label: l.taille === avant.taille ? `${lieuSac(avant)} (place actuelle)` : `Rangée ${avant.rangee} (sera replacé côté allée)` }]
+      : []
+    return [
+      { value: '', label: 'Hors plan (saisie libre)' },
+      ...actuel,
+      ...options.filter(o => !actuel.some(a => a.value === o.value)),
+    ]
   }
   function ajouterLigneSac() {
-    setForm(p => ({ ...p, lignes: [...p.lignes, { masse_kg: '', reference: '', emplacement: '', commentaire: '' }] }))
+    setForm(p => ({ ...p, lignes: [...p.lignes, { ...newLigne(), taille: p.lignes[p.lignes.length - 1]?.taille ?? 'grand', rangement: (p.lignes[p.lignes.length - 1]?.rangement ?? '').startsWith('R:') ? p.lignes[p.lignes.length - 1].rangement : '' }] }))
   }
   function supprimerLigneSac(i) {
     setForm(p => ({ ...p, lignes: p.lignes.filter((_, idx) => idx !== i) }))
@@ -140,18 +177,78 @@ export default function Stock() {
       ...commun,
       masse_kg: parseFloat(l.masse_kg),
       reference: l.reference || null,
-      emplacement: l.emplacement || null,
+      emplacement: l.rangement ? null : (l.emplacement || null),
       commentaire: l.commentaire || null,
     })
 
-    const { error } = editId
-      ? await supabase.from('sacs').update(sacDepuisLigne(lignesValides[0])).eq('id', editId)
-      : await supabase.from('sacs').insert(lignesValides.map(sacDepuisLigne))
-    if (error) {
-      alert(`Erreur : le(s) sac(s) n'ont pas pu être enregistrés.\n${error.message}`)
-      return
+    setSaving(true)
+    const erreur = editId
+      ? await modifierSac(sacs.find(s => s.id === editId), lignesValides[0], sacDepuisLigne(lignesValides[0]))
+      : await creerSacs(lignesValides, sacDepuisLigne)
+    setSaving(false)
+    if (erreur) alert(erreur)
+    if (!erreur || !erreur.startsWith('Erreur')) setModalOpen(false)
+    fetchAll()
+  }
+
+  // Range un sac selon le choix 'R:A' ou 'S:<id>'. Retourne le message d'erreur, ou null.
+  async function rangerSac(sacId, rangement, taille) {
+    const [type, cible] = [rangement.slice(0, 1), rangement.slice(2)]
+    const { error } = await supabase.rpc('placer_sac', {
+      p_sac: sacId,
+      p_rangee: type === 'R' ? cible : null,
+      p_taille: taille,
+      p_sur_sac: type === 'S' ? cible : null,
+    })
+    return error ? error.message : null
+  }
+
+  async function creerSacs(lignes, sacDepuisLigne) {
+    const nonRanges = []
+    // Un par un : l'ordre de la liste est l'ordre de rangement (le premier va au fond)
+    for (let i = 0; i < lignes.length; i++) {
+      const l = lignes[i]
+      const { data, error } = await supabase.from('sacs').insert({ ...sacDepuisLigne(l), taille: l.taille }).select('id').single()
+      if (error) {
+        setForm(p => ({ ...p, lignes: lignes.slice(i) })) // ne garder que ce qui reste à enregistrer
+        return `Erreur : ${i} sac(s) enregistré(s), les suivants restent dans la fenêtre.\n${error.message}`
+      }
+      if (l.rangement) {
+        const err = await rangerSac(data.id, l.rangement, l.taille)
+        if (err) nonRanges.push(`• ${l.reference || Math.round(l.masse_kg) + ' kg'} : ${err}`)
+      }
     }
-    setModalOpen(false)
+    return nonRanges.length ? `Sacs enregistrés, mais ${nonRanges.length} n'ont pas pu être rangés sur le plan :\n${nonRanges.join('\n')}` : null
+  }
+
+  async function modifierSac(avant, l, champs) {
+    if (!avant) return 'Erreur : ce sac n\'existe plus. Rechargez la page.'
+    if (avant.rangee && !l.rangement) {
+      const { error } = await supabase.rpc('retirer_du_plan', { p_sac: avant.id })
+      if (error) return `Erreur : le sac n'a pas pu être retiré du plan.\n${error.message}`
+    }
+    // La taille d'un sac rangé se change avec son rangement (elle modifie la place occupée)
+    const { error } = await supabase.from('sacs').update(l.rangement ? champs : { ...champs, taille: l.taille }).eq('id', avant.id)
+    if (error) return `Erreur : le sac n'a pas pu être enregistré.\n${error.message}`
+    if (l.rangement) {
+      const err = await rangerSac(avant.id, l.rangement, l.taille)
+      if (err) return `Sac enregistré, mais pas rangé sur le plan : ${err}`
+    }
+    return null
+  }
+
+  // ── Plan : placer un sac existant depuis la carte ────────────────────────────
+  function ouvrirCase(rangee, c) {
+    setCaseOuverte({ rangee, place: c?.place ?? null })
+    setPlacement({ sacId: '', taille: 'grand' })
+  }
+  async function placerDepuisCarte(rangement) {
+    if (!placement.sacId) { alert('Choisissez un sac.'); return }
+    setSaving(true)
+    const err = await rangerSac(placement.sacId, rangement, placement.taille)
+    setSaving(false)
+    if (err) alert(`Le sac n'a pas été placé.\n${err}`)
+    else setPlacement(p => ({ ...p, sacId: '' })) // la fenêtre reste ouverte pour enchaîner
     fetchAll()
   }
 
@@ -189,6 +286,7 @@ export default function Stock() {
       fournisseur: sac.fournisseur ?? null,
       numero_lot_fournisseur: sac.numero_lot_fournisseur ?? null,
       date_reception: sac.date_reception ?? null,
+      taille: sac.taille ?? 'grand',
       emplacement: sac.emplacement ?? null,
       composition_override: sac.composition_override ?? null,
     }))
@@ -237,7 +335,7 @@ export default function Stock() {
       : s.statut === filtre
     return okFiltre && correspond(recherche,
       getMpNom(s.mp_id), s.mp_id, s.reference, s.fournisseur,
-      s.numero_lot_fournisseur, s.emplacement, s.commentaire)
+      s.numero_lot_fournisseur, lieuSac(s), s.commentaire)
   })
 
   // Totaux des sacs affichés, détaillés par matière (ex: "PP Blanc Berry : 3 sacs, 2,4 t")
@@ -295,6 +393,8 @@ export default function Stock() {
           </div>
         ))}
       </div>
+
+      <PlanStock sacs={sacs} mpById={mpById} aSortir={aSortir} onCase={ouvrirCase} />
 
       {/* Vue par matière (catégories paramétrables) */}
       <VueParMatiere sacs={sacs} mpsById={mpById} />
@@ -394,7 +494,7 @@ export default function Stock() {
                       ) : '—'}
                     </td>
                     <td className="px-4 py-3 text-xs text-gray-500">
-                      {sac.emplacement ? <span>📍 {sac.emplacement}</span> : '—'}
+                      {lieuSac(sac) ? <span>📍 {lieuSac(sac)}</span> : '—'}
                       {sac.commentaire && <span title={sac.commentaire} className="ml-1 text-blue-500 cursor-help">💬</span>}
                     </td>
                     <td className="px-4 py-3 text-right font-semibold tabular-nums">{Math.round(sac.masse_kg).toLocaleString('fr-FR')} kg</td>
@@ -430,6 +530,92 @@ export default function Stock() {
           </table>
         )}
       </div>
+
+      {/* Modal case du plan */}
+      <Modal
+        open={!!caseOuverte}
+        onClose={() => setCaseOuverte(null)}
+        title={caseOuverte ? (caseOuverte.place ? `Emplacement ${caseOuverte.rangee}${caseOuverte.place}` : `Rangée ${caseOuverte.rangee}`) : ''}
+        footer={<button onClick={() => setCaseOuverte(null)} className="px-4 py-2 text-sm border border-gray-200 rounded-lg hover:bg-gray-50">Fermer</button>}
+      >
+        {caseOuverte && (() => {
+          const { rangee, place } = caseOuverte
+          const contenu = place
+            ? sacs.filter(s => s.rangee === rangee && s.place === place).sort((a, b) => b.niveau - a.niveau)
+            : []
+          const pileIncomplete = contenu.length > 0 && contenu[0].taille === 'petit' && contenu.length < MAX_PILE
+          const sacsHorsPlan = sacs.filter(s => !s.rangee && s.statut !== 'consomme' && (s.masse_kg ?? 0) > 0)
+          const peutPlacer = !place || pileIncomplete
+          const taille = pileIncomplete ? 'petit' : placement.taille
+          const option = pileIncomplete
+            ? { value: `S:${contenu[0].id}`, label: `Compléter la pile ${rangee}${place} (${contenu.length + 1}/${MAX_PILE})` }
+            : optionsRangement(sacs, taille).find(o => o.value === `R:${rangee}`)
+          return (
+            <div className={`space-y-4 ${peutPlacer ? 'min-h-[22rem]' : ''}`}>
+              {contenu.length > 0 && (
+                <div className="divide-y divide-gray-100 border border-gray-100 rounded-lg">
+                  {contenu.map(s => (
+                    <div key={s.id} className="flex items-center justify-between gap-3 px-3 py-2">
+                      <div className="text-sm">
+                        <TooltipMp mp={effectiveMp(mpById[s.mp_id], s.composition_override)}>
+                          <span className="text-gray-900 cursor-default">{getMpNom(s.mp_id)}</span>
+                        </TooltipMp>
+                        <p className="text-xs text-gray-500">
+                          {[s.taille === 'petit' && contenu.length > 1 ? `niveau ${s.niveau}` : null, s.reference, s.numero_lot_fournisseur && `lot ${s.numero_lot_fournisseur}`, s.fournisseur].filter(Boolean).join(' · ') || '—'}
+                        </p>
+                        {aSortir.has(s.id) && <p className="text-xs font-medium text-gray-700">À sortir pour un batch</p>}
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="text-sm font-semibold tabular-nums whitespace-nowrap">{(s.masse_kg ?? 0) > 0 ? `${Math.round(s.masse_kg).toLocaleString('fr-FR')} kg` : 'vidé'}</span>
+                        {(s.masse_kg ?? 0) > 0 && (
+                          <button onClick={() => { setCaseOuverte(null); openEdit(s) }} className="text-xs px-2 py-1 border border-gray-200 rounded hover:bg-gray-50">Modifier</button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {peutPlacer && (
+                <div className="space-y-3">
+                  <p className="text-xs font-medium text-gray-700">{pileIncomplete ? 'Ajouter un petit big bag sur cette pile' : 'Placer un sac déjà en stock'}</p>
+                  {sacsHorsPlan.length === 0 ? (
+                    <p className="text-xs text-gray-400 italic">Tous les sacs en stock sont déjà sur le plan. Pour un nouveau sac, utilisez « + Ajouter un sac ».</p>
+                  ) : (
+                    <>
+                      <SearchableSelect
+                        value={placement.sacId}
+                        onChange={v => setPlacement(p => ({ ...p, sacId: v, taille: sacsHorsPlan.find(s => s.id === v)?.taille === 'petit' ? 'petit' : p.taille }))}
+                        placeholder="Rechercher un sac hors plan…"
+                        tooltipMp={(() => { const s = sacsHorsPlan.find(x => x.id === placement.sacId); return s ? effectiveMp(mpById[s.mp_id], s.composition_override) : null })()}
+                        options={sacsHorsPlan.map(s => ({
+                          value: s.id,
+                          label: [getMpNom(s.mp_id), s.reference || (s.numero_lot_fournisseur && `N°${s.numero_lot_fournisseur}`), `${Math.round(s.masse_kg)} kg`, s.fournisseur, s.emplacement && `📍${s.emplacement}`].filter(Boolean).join(' · '),
+                        }))}
+                      />
+                      {!pileIncomplete && (
+                        <div className="flex gap-2">
+                          {[['grand', 'Grand'], ['petit', 'Petit']].map(([v, label]) => (
+                            <button key={v} type="button" onClick={() => setPlacement(p => ({ ...p, taille: v }))}
+                              className={`px-3 py-1.5 text-sm rounded-lg border ${placement.taille === v ? 'bg-gray-900 text-white border-gray-900' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}>
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {option ? (
+                        <button onClick={() => placerDepuisCarte(option.value)} disabled={saving || !placement.sacId}
+                          className="w-full py-2 text-sm bg-gray-900 text-white rounded-lg hover:bg-gray-700 disabled:opacity-40">
+                          {saving ? 'Placement…' : option.label}
+                        </button>
+                      ) : <p className="text-xs text-amber-700">Cette rangée est pleine.</p>}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          )
+        })()}
+      </Modal>
 
       {/* Modal scindage */}
       <Modal
@@ -490,7 +676,7 @@ export default function Stock() {
         footer={
           <>
             <button onClick={() => setModalOpen(false)} className="px-4 py-2 text-sm border border-gray-200 rounded-lg hover:bg-gray-50">Annuler</button>
-            <button onClick={handleSave} className="px-4 py-2 text-sm bg-gray-900 text-white rounded-lg hover:bg-gray-700">Enregistrer</button>
+            <button onClick={handleSave} disabled={saving} className="px-4 py-2 text-sm bg-gray-900 text-white rounded-lg hover:bg-gray-700 disabled:opacity-40">{saving ? 'Enregistrement…' : 'Enregistrer'}</button>
           </>
         }
       >
@@ -555,10 +741,26 @@ export default function Stock() {
                   </div>
                   <div className="grid grid-cols-2 gap-2">
                     <div>
-                      <label className="block text-xs text-gray-500 mb-0.5">Emplacement <span className="text-gray-400">(travée…)</span></label>
-                      <input value={l.emplacement} onChange={e => majLigneSac(i, 'emplacement', e.target.value)}
-                        placeholder="Travée B3" className="w-full text-sm border border-gray-200 rounded-lg px-2 py-1.5 bg-white" />
+                      <label className="block text-xs text-gray-500 mb-0.5">Taille</label>
+                      <select value={l.taille} onChange={e => majLigneSac(i, 'taille', e.target.value)}
+                        className="w-full text-sm border border-gray-200 rounded-lg px-2 py-1.5 bg-white">
+                        <option value="grand">Grand big bag</option>
+                        <option value="petit">Petit big bag (empilable par {MAX_PILE})</option>
+                      </select>
                     </div>
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-0.5">Emplacement</label>
+                      <SearchableSelect value={l.rangement} onChange={v => majLigneSac(i, 'rangement', v)} options={choixRangement(l)} />
+                    </div>
+                  </div>
+                  <div className={`grid gap-2 ${l.rangement ? '' : 'grid-cols-2'}`}>
+                    {!l.rangement && (
+                      <div>
+                        <label className="block text-xs text-gray-500 mb-0.5">Emplacement libre</label>
+                        <input value={l.emplacement} onChange={e => majLigneSac(i, 'emplacement', e.target.value)}
+                          placeholder="ex: atelier, extérieur…" className="w-full text-sm border border-gray-200 rounded-lg px-2 py-1.5 bg-white" />
+                      </div>
+                    )}
                     <div>
                       <label className="block text-xs text-gray-500 mb-0.5">Commentaire</label>
                       <input value={l.commentaire} onChange={e => majLigneSac(i, 'commentaire', e.target.value)}

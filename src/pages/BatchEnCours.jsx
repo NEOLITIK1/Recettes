@@ -2,7 +2,11 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase.js'
 import { calcComposition, calcCout, fmt1, effectiveMp, COMP_PARAMS_FULL, ratioProduction, compositionVersMp } from '../lib/calculs.js'
-import { restaurerSacsConsommes, lignesRestaurables, lignePourSac, sacUpdatePourPrise } from '../lib/batchOps.js'
+import {
+  restaurerSacsConsommes, lignesRestaurables, lignePourSac, sacUpdatePourPrise,
+  ajouterSacsAuBatchAvecStock, substituerSacLigne, ajusterMasseLigne, sortirSacsBatch,
+} from '../lib/batchOps.js'
+import { lieuSac, idsASortir, fusionnerSacs, planImpressionHtml, PLAN_IMPRESSION_CSS } from '../lib/plan.js'
 import EcartBadge from '../components/EcartBadge.jsx'
 import Modal from '../components/Modal.jsx'
 import TooltipMp from '../components/TooltipMp.jsx'
@@ -55,14 +59,16 @@ export default function BatchEnCours() {
 
   async function fetchAll() {
     setLoading(true)
-    const [{ data: batchData }, { data: rcData }, { data: mpsData }, { data: lignesData }, { data: consoData }, { data: sacsData }] = await Promise.all([
+    const [{ data: batchData }, { data: rcData }, { data: mpsData }, { data: lignesData }, { data: consoData }, { data: sacsLus }, { data: ranges }] = await Promise.all([
       supabase.from('batches').select('*').eq('statut', 'en_cours').order('created_at', { ascending: false }),
       supabase.from('recettes_cibles').select('*'),
       supabase.from('matieres_premieres').select('*').order('id'),
       supabase.from('batch_lignes').select('*'),
       supabase.from('batch_consommations').select('*').order('date_consommation', { ascending: false }),
       supabase.from('sacs').select('*'),
+      supabase.from('sacs').select('*').not('rangee', 'is', null),
     ])
+    const sacsData = fusionnerSacs(sacsLus, ranges)
     const mps = {}
     for (const mp of (mpsData ?? [])) mps[mp.id] = mp
     setMpsMap(mps)
@@ -108,10 +114,43 @@ export default function BatchEnCours() {
     return { total, consommee, reste, restanteMelange, nonComptabilise, ecartPct }
   }
 
+  // Remet des sacs en stock ; retourne false (rien n'est modifié) en cas d'erreur
+  async function restituerOuAlerter(lignes) {
+    const { error, avis } = await restaurerSacsConsommes(lignes)
+    if (error) { alert(`Erreur : les sacs n'ont pas pu être remis en stock. Opération annulée.\n${error.message}`); return false }
+    if (avis) alert(avis)
+    return true
+  }
+
+  // ── Sortie physique des sacs ───────────────────────────────────────────────
+  // Tant qu'elle n'est pas confirmée, les sacs du batch gardent leur place (en gris
+  // sur le plan). La confirmation libère les places et décale les rangées.
+  function sacsAConfirmer(batch) {
+    return [...idsASortir(batch.lignes)].map(id => sacsMap[id]).filter(s => s?.rangee)
+  }
+  async function confirmerSortie(batch) {
+    const sacs = sacsAConfirmer(batch)
+    const vides = sacs.filter(s => (s.masse_kg ?? 0) <= 0)
+    const entames = sacs.length - vides.length
+    if (!confirm(
+      `Confirmer que les sacs du batch "${batch.nom}" sont sortis ?\n\n` +
+      (vides.length ? `Places libérées : ${vides.map(lieuSac).sort().join(', ')}\nLes sacs situés devant reculent d'une place vers le fond.\n` : '') +
+      (entames ? `${entames} sac(s) entamé(s) gardent leur place.\n` : '')
+    )) return
+    const { error, rangees } = await sortirSacsBatch(batch.id)
+    if (error) { alert(`Erreur : la sortie n'a pas pu être enregistrée.\n${error.message}`); return }
+    // Les feuilles déjà imprimées d'autres batchs deviennent fausses si leurs rangées ont bougé
+    const aReimprimer = batches.filter(b => b.id !== batch.id && sacsAConfirmer(b).some(s => rangees.includes(s.rangee)))
+    if (aReimprimer.length) {
+      alert(`Les rangées ${rangees.join(', ')} ont bougé.\n\nRéimprimez la feuille de : ${aReimprimer.map(b => b.nom).join(', ')}`)
+    }
+    fetchAll()
+  }
+
   // ── Repasser en optimiseur ─────────────────────────────────────────────────
   async function repasserEnOptimiseur(batch) {
     if (!confirm(`Repasser le batch "${batch.nom}" en optimiseur ? Les sacs originaux seront restaurés en stock.`)) return
-    await restaurerSacsConsommes(batch.lignes)
+    if (!await restituerOuAlerter(batch.lignes)) return
     await supabase.from('batch_consommations').delete().eq('batch_id', batch.id)
     await supabase.from('batch_lignes').delete().eq('batch_id', batch.id)
     await supabase.from('batches').delete().eq('id', batch.id)
@@ -134,7 +173,11 @@ export default function BatchEnCours() {
     const batch = modalSuppr
     if (!batch) return
     if (restaurer) {
-      await restaurerSacsConsommes(batch.lignes)
+      if (!await restituerOuAlerter(batch.lignes)) return
+    } else {
+      // La matière a réellement été consommée : libérer les places encore occupées
+      const { error } = await sortirSacsBatch(batch.id)
+      if (error) { alert(`Erreur : les places n'ont pas pu être libérées. Opération annulée.\n${error.message}`); return }
     }
     await supabase.from('batch_consommations').delete().eq('batch_id', batch.id)
     await supabase.from('batch_lignes').delete().eq('batch_id', batch.id)
@@ -161,8 +204,14 @@ export default function BatchEnCours() {
     if (masseNonDeclaree > 0) {
       msg += `\n\n⚠ Attention : ${Math.round(masseNonDeclaree)} kg non déclarés (perte technique acceptée).`
     }
+    if (sacsAConfirmer(batch).length) {
+      msg += `\n\nLes sacs de ce batch seront considérés comme sortis (places libérées sur le plan).`
+    }
     if (!confirm(msg)) return
-    await supabase.from('batches').update({ statut: 'cloture' }).eq('id', batch.id)
+    const { error: sErr } = await sortirSacsBatch(batch.id)
+    if (sErr) { alert(`Erreur : les places n'ont pas pu être libérées, batch non clôturé.\n${sErr.message}`); return }
+    const { error } = await supabase.from('batches').update({ statut: 'cloture' }).eq('id', batch.id)
+    if (error) alert(`Erreur lors de la clôture.\n${error.message}`)
     fetchAll()
   }
 
@@ -182,73 +231,21 @@ export default function BatchEnCours() {
     if (!ligne) return
     const nouvelleMasse = parseFloat(editMasse)
     if (!nouvelleMasse || nouvelleMasse <= 0) { alert('Masse invalide.'); return }
-    const ancienneMasse = ligne.masse_totale_kg ?? 0
-    const delta = nouvelleMasse - ancienneMasse // >0 = prélever plus, <0 = réduire
-    if (Math.abs(delta) < 0.5) { setModalEditLigne(null); return }
+    if (Math.abs(nouvelleMasse - (ligne.masse_totale_kg ?? 0)) < 0.5) { setModalEditLigne(null); return }
 
     const sc = Array.isArray(ligne.sacs_consommes) ? ligne.sacs_consommes : []
     const trackedSingle = sc.length === 1 && sc[0]?.sac_id
-
-    if (trackedSingle) {
-      const entry = sc[0]
-      const newEntry = { ...entry, masse_prise: nouvelleMasse }
-      const { data: sac } = await supabase
-        .from('sacs').select('id, masse_kg, statut').eq('id', entry.sac_id).maybeSingle()
-      if (!sac) {
-        if (!confirm("Le sac source n'existe plus en stock. Modifier seulement la masse de la ligne, sans ajuster le stock ?")) return
-      } else if (delta > 0) {
-        // Prélèvement supplémentaire sur le sac
-        const nouvelleMasseSac = (sac.masse_kg ?? 0) - delta
-        if (nouvelleMasseSac < -0.5) {
-          alert(`Impossible : il faudrait prélever ${Math.round(delta)} kg de plus, mais le sac ne contient que ${Math.round(sac.masse_kg ?? 0)} kg disponibles.`)
-          return
-        }
-        const masseAvant = entry.masse_avant_kg ?? nouvelleMasse
-        const masseSacFinale = Math.max(0, Math.round(nouvelleMasseSac))
-        const statutFinal = masseSacFinale <= 0 ? 'consomme'
-          : (masseSacFinale >= masseAvant - 0.5 ? (entry.statut_avant ?? 'disponible') : 'partiel')
-        const err = await majStockSac(sac.id, masseSacFinale, statutFinal)
-        if (err) return
-      } else if (mode === 'ecart') {
-        // Écart de pesée : ne rien restituer, corriger le total réel du sac (masse_avant)
-        const masseAvantCorrige = Math.max(0, Math.round((entry.masse_avant_kg ?? ancienneMasse) + delta))
-        const masseSacFinale = Math.max(0, Math.round(sac.masse_kg ?? 0)) // inchangé
-        const statutFinal = masseSacFinale <= 0 ? 'consomme'
-          : (masseSacFinale >= masseAvantCorrige - 0.5 ? (entry.statut_avant ?? 'disponible') : 'partiel')
-        const err = await majStockSac(sac.id, masseSacFinale, statutFinal)
-        if (err) return
-        newEntry.masse_avant_kg = masseAvantCorrige
-      } else {
-        // Restituer la différence au stock (prélèvement partiel : la matière existe)
-        const masseAvant = entry.masse_avant_kg ?? nouvelleMasse
-        const masseSacFinale = Math.max(0, Math.round((sac.masse_kg ?? 0) - delta)) // delta<0 → ajoute
-        const statutFinal = masseSacFinale <= 0 ? 'consomme'
-          : (masseSacFinale >= masseAvant - 0.5 ? (entry.statut_avant ?? 'disponible') : 'partiel')
-        const err = await majStockSac(sac.id, masseSacFinale, statutFinal)
-        if (err) return
-      }
-      const { error: lErr } = await supabase.from('batch_lignes').update({
-        masse_totale_kg: nouvelleMasse, sacs_kg: [nouvelleMasse], sacs_consommes: [newEntry],
-      }).eq('id', ligne.id)
-      if (lErr) { alert(`Erreur lors de la mise à jour de la ligne.\n${lErr.message}`); return }
-    } else {
+    if (!trackedSingle) {
       if (!confirm("Cette ligne n'a pas de sac source unique tracé (batch ancien ou manuel) : la masse sera modifiée mais le stock ne sera PAS ajusté automatiquement. Continuer ?")) return
-      const { error: lErr } = await supabase.from('batch_lignes').update({
-        masse_totale_kg: nouvelleMasse, sacs_kg: [nouvelleMasse],
-      }).eq('id', ligne.id)
-      if (lErr) { alert(`Erreur lors de la mise à jour de la ligne.\n${lErr.message}`); return }
+    } else if (!sacsMap[sc[0].sac_id]) {
+      if (!confirm("Le sac source n'existe plus en stock. Modifier seulement la masse de la ligne, sans ajuster le stock ?")) return
     }
+    const { error, avis } = await ajusterMasseLigne(ligne.id, nouvelleMasse, mode ?? null)
+    if (error) { alert(`La masse n'a pas été modifiée.\n${error.message}`); return }
+    if (avis) alert(avis)
     setModalEditLigne(null)
     setEditMasse('')
     fetchAll()
-  }
-
-  // Helper : met à jour masse + statut d'un sac, retourne l'erreur éventuelle
-  async function majStockSac(id, masse_kg, statut) {
-    const { error } = await supabase.from('sacs')
-      .update({ masse_kg, statut, updated_at: new Date().toISOString() }).eq('id', id)
-    if (error) alert(`Erreur lors de l'ajustement du stock.\n${error.message}`)
-    return error
   }
 
   // ── Substituer le sac d'une ligne par un autre sac du stock ──────────────────
@@ -266,33 +263,12 @@ export default function BatchEnCours() {
     if (!substSacId) { alert('Sélectionnez un sac de remplacement.'); return }
     if (!masse || masse <= 0) { alert('Masse invalide.'); return }
 
-    // 1. Restituer l'ancien sac (si la ligne le traçait)
-    await restaurerSacsConsommes([ligne])
-
-    // 2. Relire le nouveau sac APRÈS restitution (gère le cas du même sac, masse à jour)
-    const { data: nouveauSac } = await supabase.from('sacs').select('*').eq('id', substSacId).maybeSingle()
-    if (!nouveauSac) { alert('Sac de remplacement introuvable.'); fetchAll(); return }
-    if (masse > (nouveauSac.masse_kg ?? 0) + 0.5) {
-      alert(`Le sac sélectionné ne contient que ${Math.round(nouveauSac.masse_kg ?? 0)} kg — impossible d'en prélever ${Math.round(masse)} kg. L'ancien sac a été restitué ; relancez la substitution.`)
-      fetchAll()
-      return
-    }
-
-    // 3. Prélever le nouveau sac
-    const upd = sacUpdatePourPrise(nouveauSac, masse)
-    const err = await majStockSac(nouveauSac.id, upd.masse_kg, upd.statut)
-    if (err) { fetchAll(); return }
-
-    // 4. Réécrire la ligne avec le nouveau sac (mp_id, snapshot, composition)
+    const nouveauSac = sacsMap[substSacId]
+    if (!nouveauSac) { alert('Sac de remplacement introuvable.'); return }
     const nl = lignePourSac(nouveauSac, masse, ligne.ordre ?? 0, effectiveMp(mpsMap[nouveauSac.mp_id], nouveauSac.composition_override))
-    const { error: lErr } = await supabase.from('batch_lignes').update({
-      mp_id: nl.mp_id,
-      masse_totale_kg: nl.masse_totale_kg,
-      sacs_kg: nl.sacs_kg,
-      sacs_consommes: nl.sacs_consommes,
-      composition_snapshot: nl.composition_snapshot,
-    }).eq('id', ligne.id)
-    if (lErr) { alert(`Erreur lors de la mise à jour de la ligne.\n${lErr.message}`); fetchAll(); return }
+    const { error, avis } = await substituerSacLigne(ligne.id, nl, nouveauSac.id, masse)
+    if (error) { alert(`Le sac n'a pas été remplacé (stock inchangé).\n${error.message}`); fetchAll(); return }
+    if (avis) alert(avis)
 
     setModalSubst(null)
     setSubstSacId('')
@@ -346,6 +322,8 @@ export default function BatchEnCours() {
     })
     if (sacErr) { alert(`Erreur : le sac récupéré n'a pas pu être ajouté au stock.\n${sacErr.message}`); return }
 
+    const { error: sortieErr } = await sortirSacsBatch(batch.id)
+    if (sortieErr) alert(`Les places du batch n'ont pas pu être libérées sur le plan.\n${sortieErr.message}`)
     const { error: cErr } = await supabase.from('batches').update({ statut: 'cloture' }).eq('id', batch.id)
     if (cErr) { alert(`La matière a été créée mais le batch n'a pas pu être clôturé.\n${cErr.message}`) }
 
@@ -360,7 +338,7 @@ export default function BatchEnCours() {
       ? 'Supprimer cette ligne ? Le(s) sac(s) prélevé(s) seront remis en stock.'
       : 'Supprimer cette ligne ? Pas de tracking du sac source : le stock ne sera pas modifié.'
     if (!confirm(msg)) return
-    if (tracked) await restaurerSacsConsommes([ligne])
+    if (tracked && !await restituerOuAlerter([ligne])) return
     const { error } = await supabase.from('batch_lignes').delete().eq('id', ligne.id)
     if (error) alert(`Erreur lors de la suppression de la ligne.\n${error.message}`)
     fetchAll()
@@ -371,7 +349,7 @@ export default function BatchEnCours() {
   function labelSacStock(sac) {
     const mp = mpsMap[sac.mp_id]
     const ref = sac.reference || (sac.numero_lot_fournisseur ? `N°${sac.numero_lot_fournisseur}` : sac.id.slice(0, 8))
-    return `${ref} — ${mp?.nom ?? sac.mp_id} — ${Math.round(sac.masse_kg ?? 0)} kg${sac.fournisseur ? ' · ' + sac.fournisseur : ''}`
+    return `${ref} — ${mp?.nom ?? sac.mp_id} — ${Math.round(sac.masse_kg ?? 0)} kg${sac.fournisseur ? ' · ' + sac.fournisseur : ''}${lieuSac(sac) ? ' · 📍' + lieuSac(sac) : ''}`
   }
   function majAjoutPrise(i, field, value) {
     setAjoutPrises(prev => prev.map((p, idx) => {
@@ -402,21 +380,13 @@ export default function BatchEnCours() {
       }
     }
 
-    const lignes = selection.map(({ sac, taken }, i) => ({
-      ...lignePourSac(sac, taken, 99 + i, effectiveMp(mpsMap[sac.mp_id], sac.composition_override)),
-      batch_id: modalAjout,
-    }))
-    const { error: lErr } = await supabase.from('batch_lignes').insert(lignes)
-    if (lErr) {
-      alert(`Erreur : impossible d'ajouter les sacs au batch (stock inchangé).\n${lErr.message}`)
+    const lignes = selection.map(({ sac, taken }, i) =>
+      lignePourSac(sac, taken, 99 + i, effectiveMp(mpsMap[sac.mp_id], sac.composition_override)))
+    const err = await ajouterSacsAuBatchAvecStock(modalAjout, lignes, selection.map(({ sac, taken }) => sacUpdatePourPrise(sac, taken)))
+    if (err) {
+      alert(`Erreur : impossible d'ajouter les sacs au batch (stock inchangé).\n${err.message}`)
+      fetchAll()
       return
-    }
-    for (const { sac, taken } of selection) {
-      const upd = sacUpdatePourPrise(sac, taken)
-      const { error: sErr } = await supabase.from('sacs')
-        .update({ masse_kg: upd.masse_kg, statut: upd.statut, updated_at: new Date().toISOString() })
-        .eq('id', sac.id)
-      if (sErr) alert(`Attention : la ligne a été ajoutée mais le stock du sac n'a pas pu être mis à jour.\n${sErr.message}`)
     }
     setModalAjout(null)
     setAjoutPrises([])
@@ -534,6 +504,13 @@ export default function BatchEnCours() {
     fetchAll()
   }
 
+  // Lieu d'un sac de batch : sa position actuelle tant qu'il n'est pas sorti, sinon celle de sa sortie
+  function lieuEntree(ligne, entree) {
+    const sac = entree?.sac_id ? sacsMap[entree.sac_id] : null
+    if (!ligne?.sortie_at && sac) return lieuSac(sac) || entree.emplacement || ''
+    return lieuSac(entree) || sac?.emplacement || ''
+  }
+
   // ── Impression ─────────────────────────────────────────────────────────────
   function imprimerBatch(batch) {
     const rc = recettes.find(r => r.id === batch.recette_id)
@@ -545,13 +522,13 @@ export default function BatchEnCours() {
     // Récupère l'identifiant le plus utile pour un sac donné :
     // 1. snapshot stocké dans sacs_consommes (résiste à la suppression du sac)
     // 2. sinon, lookup dans sacsMap (sacs courants en DB)
-    function sacInfo(sacEntry) {
+    function sacInfo(sacEntry, ligne) {
       const fromMap = sacEntry?.sac_id ? sacsMap[sacEntry.sac_id] : null
       return {
         reference:              sacEntry?.reference              ?? fromMap?.reference              ?? null,
         fournisseur:            sacEntry?.fournisseur            ?? fromMap?.fournisseur            ?? null,
         numero_lot_fournisseur: sacEntry?.numero_lot_fournisseur ?? fromMap?.numero_lot_fournisseur ?? null,
-        emplacement:            sacEntry?.emplacement            ?? fromMap?.emplacement            ?? null,
+        emplacement:            lieuEntree(ligne, sacEntry),
         commentaire:            sacEntry?.commentaire            ?? fromMap?.commentaire            ?? null,
       }
     }
@@ -566,7 +543,7 @@ export default function BatchEnCours() {
       const sc = Array.isArray(l.sacs_consommes) ? l.sacs_consommes : []
       if (sc.length > 0) {
         for (const e of sc) {
-          const info = sacInfo(e)
+          const info = sacInfo(e, l)
           const masse = Math.round(e.masse_prise ?? 0)
           const masseSac = Math.round(e.masse_avant_kg ?? 0)
           const partiel = masseSac > 0 && masse < masseSac - 0.5
@@ -606,6 +583,21 @@ export default function BatchEnCours() {
       </tr>`
     }
 
+    // Verso : plan de stockage, avec les sacs à sortir en gris
+    const aSortir = idsASortir(batch.lignes)
+    const planHtml = sacsAConfirmer(batch).length === 0 ? '' : `
+<div class="verso">
+  <h1>Plan de stockage — batch ${esc(batch.nom)}</h1>
+  ${planImpressionHtml(Object.values(sacsMap), aSortir)}
+  <div class="legende">
+    <div><span class="c sortir"></span><strong>À SORTIR</strong></div>
+    <div><span class="c plein"></span>Grand big bag</div>
+    <div><span class="c plein">2</span>Nombre de petits big bags empilés</div>
+    <div><span class="c libre"></span>Place libre</div>
+  </div>
+  <p style="font-size:11px;color:#444;">Plan du ${new Date().toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}. Place 1 au fond contre le mur. Réimprimer si des sacs ont été sortis depuis.</p>
+</div>`
+
     const dateStr = batch.date_creation ? new Date(batch.date_creation).toLocaleDateString('fr-FR') : ''
 
     const html = `<!DOCTYPE html>
@@ -626,9 +618,12 @@ export default function BatchEnCours() {
   table.silo { width: 100%; border-collapse: collapse; }
   table.silo th, table.silo td { border: 1px solid #333; padding: 6px 8px; font-size: 12px; vertical-align: top; }
   table.silo th { background: #efefef; text-align: left; }
-  table.silo td { height: 30px; }
+  ${totalRows > MIN_ROWS ? "table.silo td { height: 16px; padding: 3px 8px; }" : "table.silo td { height: 30px; }"}
   .pp { margin-top: 22px; font-weight: 700; text-decoration: underline; }
-  @media print { body { margin: 12mm; } }
+  ${PLAN_IMPRESSION_CSS}
+  .verso { break-before: page; page-break-before: always; }
+  @page { size: A4; margin: 12mm; }
+  @media print { body { margin: 0; } }
 </style>
 </head>
 <body>
@@ -676,6 +671,7 @@ export default function BatchEnCours() {
 <div style="text-align:right;font-size:12px;margin-top:6px;">Total à sortir : <strong>${Math.round(masseTotale).toLocaleString('fr-FR')} kg</strong></div>
 
 <p class="pp">Point particulier :</p>
+${planHtml}
 <script>window.addEventListener('load', () => setTimeout(() => window.print(), 100));</script>
 </body></html>`
 
@@ -760,6 +756,11 @@ export default function BatchEnCours() {
                     <button onClick={() => imprimerBatch(batch)} className="text-xs px-3 py-1.5 border border-gray-200 rounded-lg hover:bg-gray-50">
                       🖨 Imprimer
                     </button>
+                    {sacsAConfirmer(batch).length > 0 && (
+                      <button onClick={() => confirmerSortie(batch)} title="Confirmer que les sacs sont physiquement sortis : libère leurs places sur le plan" className="text-xs px-3 py-1.5 bg-gray-900 text-white rounded-lg hover:bg-gray-700">
+                        ✓ Sacs sortis ({sacsAConfirmer(batch).length})
+                      </button>
+                    )}
                     <button onClick={() => repasserEnOptimiseur(batch)} className="text-xs px-3 py-1.5 border border-amber-200 text-amber-700 rounded-lg hover:bg-amber-50">
                       ↩ Optimiseur
                     </button>
@@ -855,7 +856,7 @@ export default function BatchEnCours() {
                       const lotInfo = sc.length === 1
                         ? (sc[0].numero_lot_fournisseur ? `N°lot ${sc[0].numero_lot_fournisseur}` : sc[0].reference)
                         : null
-                      const empl = sc.length === 1 ? (sc[0].emplacement ?? sacsMap[sc[0].sac_id]?.emplacement) : null
+                      const empl = sc.length === 1 ? lieuEntree(l, sc[0]) : null
                       return (
                       <tr key={l.id} className="hover:bg-gray-50">
                         <td className="px-4 py-3 text-gray-900">

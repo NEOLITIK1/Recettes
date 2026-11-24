@@ -28,6 +28,10 @@ export function lignePourSac(sac, taken, ordre, mpEffectif = null) {
       fournisseur: sac.fournisseur ?? null,
       numero_lot_fournisseur: sac.numero_lot_fournisseur ?? null,
       emplacement: sac.emplacement ?? null,
+      rangee: sac.rangee ?? null,
+      place: sac.place ?? null,
+      niveau: sac.niveau ?? null,
+      taille: sac.taille ?? null,
       commentaire: sac.commentaire ?? null,
     }],
     // Fige la composition (complète si mpEffectif fourni, sinon l'override seul)
@@ -37,87 +41,64 @@ export function lignePourSac(sac, taken, ordre, mpEffectif = null) {
   }
 }
 
-// Mise à jour stock correspondant au prélèvement : partiel ou consommé
+// Mise à jour stock correspondant au prélèvement : partiel ou consommé.
+// masse_lue permet à la base de refuser si le sac a changé entre-temps.
 export function sacUpdatePourPrise(sac, taken) {
   const masseRestante = Math.max(0, Math.round((sac.masse_kg ?? 0) - taken))
-  return masseRestante > 0
-    ? { id: sac.id, masse_kg: masseRestante, statut: 'partiel' }
-    : { id: sac.id, masse_kg: 0, statut: 'consomme' }
+  return {
+    id: sac.id,
+    masse_lue: sac.masse_kg ?? 0,
+    masse_kg: masseRestante,
+    statut: masseRestante > 0 ? 'partiel' : 'consomme',
+  }
 }
 
-// Crée un batch + lignes + met à jour le stock.
-// Utilise la fonction Postgres valider_batch (transaction atomique, migration v9).
-// Si la migration n'est pas encore appliquée, retombe sur des écritures
-// séquentielles avec annulation de l'en-tête en cas d'échec des lignes.
-// Retourne null si OK, sinon l'erreur Supabase.
+// Toutes les écritures ci-dessous passent par des fonctions Postgres (migration v12) :
+// tout ou rien, sous verrou.
+
+// Crée un batch + lignes + met à jour le stock. Retourne l'erreur Supabase, ou null si OK.
 export async function creerBatchAvecStock(batch, lignes, sacUpdates) {
-  const { error: rpcErr } = await supabase.rpc('valider_batch', {
-    p_batch: batch,
-    p_lignes: lignes,
-    p_sacs: sacUpdates,
-  })
-  if (!rpcErr) return null
-  // PGRST202 = fonction inexistante (migration v9 pas encore exécutée)
-  const fnAbsente = rpcErr.code === 'PGRST202' || /valider_batch/i.test(rpcErr.message ?? '')
-  if (!fnAbsente) return rpcErr
-
-  // ── Fallback séquentiel ──
-  let batchInsert = { ...batch }
-  let { error: bErr } = await supabase.from('batches').insert(batchInsert)
-  if (bErr && /optimiseur_params/i.test(bErr.message ?? '')) {
-    // Colonne v9 absente : on réessaie sans (les params seront juste perdus)
-    delete batchInsert.optimiseur_params
-    ;({ error: bErr } = await supabase.from('batches').insert(batchInsert))
-  }
-  if (bErr) return bErr
-
-  const { error: lErr } = await supabase.from('batch_lignes')
-    .insert(lignes.map(l => ({ ...l, batch_id: batch.id })))
-  if (lErr) {
-    // Ne pas laisser un en-tête de batch orphelin (le stock n'a pas été touché)
-    await supabase.from('batches').delete().eq('id', batch.id)
-    return lErr
-  }
-
-  for (const s of sacUpdates) {
-    const { error: sErr } = await supabase.from('sacs')
-      .update({ masse_kg: s.masse_kg, statut: s.statut, updated_at: new Date().toISOString() })
-      .eq('id', s.id)
-    if (sErr) return sErr
-  }
-  return null
+  const { error } = await supabase.rpc('valider_batch', { p_batch: batch, p_lignes: lignes, p_sacs: sacUpdates })
+  return error
 }
 
-// Restaure les sacs sources de lignes batch depuis leur snapshot sacs_consommes :
-// ré-ajoute la masse prélevée et rétablit le statut d'origine.
-// Robuste si d'autres batchs ont touché le sac entretemps (addition simple).
-// Retourne le nombre de sacs restaurés.
+// Ajoute des sacs à un batch existant. Retourne l'erreur Supabase, ou null si OK.
+export async function ajouterSacsAuBatchAvecStock(batchId, lignes, sacUpdates) {
+  const { error } = await supabase.rpc('ajouter_sacs_batch', { p_batch_id: batchId, p_lignes: lignes, p_sacs: sacUpdates })
+  return error
+}
+
+// Texte à afficher après une restitution qui n'a pas pu être complète (sinon '')
+function avisRestitution(r) {
+  const avis = []
+  if (r?.manquants > 0) avis.push(`${r.manquants} sac(s) n'existent plus en stock et n'ont pas pu être restitués.`)
+  if (r?.hors_plan > 0) avis.push(`${r.hors_plan} sac(s) restitués sans place : leur rangée est pleine. Rangez-les depuis la page Stock.`)
+  return avis.join('\n')
+}
+
+// Remet en stock les sacs de lignes de batch (masse, statut, place en rangée).
+// Retourne { error, avis } — avis : texte à montrer à l'utilisateur, ou ''.
 export async function restaurerSacsConsommes(lignes) {
-  let restaures = 0
-  for (const ligne of lignes) {
-    const sc = Array.isArray(ligne.sacs_consommes) ? ligne.sacs_consommes : []
-    for (const entry of sc) {
-      if (!entry?.sac_id) continue
-      const { data: sacActuel } = await supabase
-        .from('sacs')
-        .select('id, masse_kg, statut')
-        .eq('id', entry.sac_id)
-        .maybeSingle()
-      if (!sacActuel) continue // sac supprimé entretemps : rien à restaurer
-      const masseRestauree = (sacActuel.masse_kg ?? 0) + (entry.masse_prise ?? 0)
-      const masseAvant = entry.masse_avant_kg ?? masseRestauree
-      const statutFinal = masseRestauree >= masseAvant - 0.5
-        ? (entry.statut_avant ?? 'disponible')
-        : 'partiel'
-      const { error } = await supabase.from('sacs').update({
-        masse_kg: Math.round(masseRestauree),
-        statut: statutFinal,
-        updated_at: new Date().toISOString(),
-      }).eq('id', entry.sac_id)
-      if (!error) restaures++
-    }
-  }
-  return restaures
+  const { data, error } = await supabase.rpc('restituer_lignes', { p_lignes: lignes.map(l => l.id) })
+  return { error, avis: avisRestitution(data) }
+}
+
+// Remplace le sac d'une ligne : restitue l'ancien et prélève le nouveau en une seule fois
+export async function substituerSacLigne(ligneId, nouvelleLigne, sacId, masse) {
+  const { data, error } = await supabase.rpc('substituer_sac', { p_ligne: ligneId, p_nouvelle: nouvelleLigne, p_sac: sacId, p_masse: masse })
+  return { error, avis: avisRestitution(data) }
+}
+
+// Corrige la masse d'une ligne et répercute l'écart sur son sac
+export async function ajusterMasseLigne(ligneId, masse, mode = null) {
+  const { data, error } = await supabase.rpc('ajuster_masse_ligne', { p_ligne: ligneId, p_masse: masse, p_mode: mode })
+  return { error, avis: data?.hors_plan ? 'Le sac a été remis en stock sans place : sa rangée est pleine. Rangez-le depuis la page Stock.' : '' }
+}
+
+// Confirme que les sacs d'un batch sont physiquement sortis : libère leurs places
+export async function sortirSacsBatch(batchId) {
+  const { data, error } = await supabase.rpc('sortir_sacs_batch', { p_batch_id: batchId })
+  return { error, sortis: data?.sortis ?? 0, rangees: data?.rangees ?? [] }
 }
 
 // Une ligne (ou un batch) est restaurable si au moins une ligne trace ses sacs sources

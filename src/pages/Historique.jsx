@@ -88,7 +88,9 @@ export default function Historique() {
       // ou importés) : recréer un nouveau sac générique de la MP.
       const lignesTrackees = batch.lignes.filter(l => Array.isArray(l.sacs_consommes) && l.sacs_consommes.length > 0)
       const lignesSansTracking = batch.lignes.filter(l => !Array.isArray(l.sacs_consommes) || l.sacs_consommes.length === 0)
-      await restaurerSacsConsommes(lignesTrackees)
+      const { error, avis } = await restaurerSacsConsommes(lignesTrackees)
+      if (error) { alert(`Erreur : les sacs n'ont pas pu être remis en stock, le batch n'est pas supprimé.\n${error.message}`); return }
+      if (avis) alert(avis)
       for (const ligne of lignesSansTracking) {
         if (!ligne.mp_id || !ligne.masse_totale_kg) continue
         const { error } = await supabase.from('sacs').insert({

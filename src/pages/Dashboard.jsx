@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { supabase } from '../lib/supabase.js'
+import { statsPlan, fusionnerSacs } from '../lib/plan.js'
+import { RecapPlaces } from '../components/PlanStock.jsx'
 import { calcComposition, calcCout } from '../lib/calculs.js'
 
 // Utilitaire dates
@@ -33,19 +35,20 @@ export default function Dashboard() {
 
   async function fetchAll() {
     setLoading(true)
-    const [b, l, r, s, m, c] = await Promise.all([
+    const [b, l, r, s, m, c, ranges] = await Promise.all([
       supabase.from('batches').select('*'),
       supabase.from('batch_lignes').select('*'),
       supabase.from('recettes_cibles').select('*'),
       supabase.from('sacs').select('*'),
       supabase.from('matieres_premieres').select('*'),
       supabase.from('batch_consommations').select('*'),
+      supabase.from('sacs').select('*').not('rangee', 'is', null),
     ])
     setData({
       batches:  b.data ?? [],
       lignes:   l.data ?? [],
       recettes: r.data ?? [],
-      sacs:     s.data ?? [],
+      sacs:     fusionnerSacs(s.data, ranges.data),
       mps:      m.data ?? [],
       conso:    c.data ?? [],
     })
@@ -261,6 +264,9 @@ export default function Dashboard() {
               <p className="text-xl font-semibold text-gray-900">{nbMpEnStock}</p>
             </div>
           </div>
+          <Link to="/stock" className="block border border-gray-100 bg-gray-50 rounded-lg p-3 mb-3 hover:bg-gray-100">
+            <RecapPlaces stats={statsPlan(sacs)} />
+          </Link>
           <div>
             <p className="text-xs text-gray-500 mb-2">Top consommation ce mois</p>
             {topMps.length === 0 ? (

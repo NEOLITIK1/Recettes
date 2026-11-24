@@ -1,5 +1,6 @@
 -- NEOLITIK — Schéma Supabase complet (consolidé : inclut migrations v6 à v11)
--- Installation neuve : coller ce seul fichier dans Supabase > SQL Editor > New query > Run
+-- Installation neuve : coller ce fichier dans Supabase > SQL Editor > New query > Run,
+--   puis exécuter migration-v12.sql (plan de stockage)
 -- Base existante : exécuter uniquement les migration-vX.sql manquants
 
 -- 1. Matières premières
