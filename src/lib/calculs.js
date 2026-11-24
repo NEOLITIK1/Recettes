@@ -90,6 +90,29 @@ export function calcComposition(lignes) {
   }
 }
 
+// Convertit la composition d'un batch (sortie de calcComposition) en fiche MP.
+// calcComposition donne les polymères en % du PLASTIQUE, alors qu'une fiche MP les
+// attend en % de la masse TOTALE : il faut les ramener à la part plastique, sinon
+// polymères + sable dépassent 100% dès que le batch contient du sable ou du minéral.
+// Les couleurs restent en % du plastique, sable et charge en % du total.
+export function compositionVersMp(comp) {
+  const r2 = v => Math.round((v ?? 0) * 100) / 100
+  const partPlast = Math.max(0, 1 - ((comp.ecoLithe ?? 0) + (comp.chargeMin ?? 0)) / 100)
+  return {
+    pct_pp:                r2(comp.pp * partPlast),
+    pct_pe:                r2(comp.pe * partPlast),
+    pct_alu:               r2(comp.alu * partPlast),
+    pct_autres:            r2(comp.autres * partPlast),
+    pct_autres_plastiques: r2(comp.autresPlast * partPlast),
+    pct_blanc:             r2(comp.blanc),
+    pct_transparent:       r2(comp.transp),
+    pct_noir:              r2(comp.noir),
+    pct_autres_couleurs:   r2(comp.autresCoul),
+    pct_sable:             r2(comp.ecoLithe),
+    pct_charge_minerale:   r2(comp.chargeMin),
+  }
+}
+
 // Liste complète des paramètres de composition à afficher dans les tableaux
 // "résultat vs cible" (écran ET impression) — source unique pour toutes les pages.
 // Les couleurs (blanc, transparent, noir, autres) font partie des statistiques.

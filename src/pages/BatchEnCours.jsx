@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase.js'
-import { calcComposition, calcCout, fmt1, effectiveMp, COMP_PARAMS_FULL, ratioProduction } from '../lib/calculs.js'
+import { calcComposition, calcCout, fmt1, effectiveMp, COMP_PARAMS_FULL, ratioProduction, compositionVersMp } from '../lib/calculs.js'
 import { restaurerSacsConsommes, lignesRestaurables, lignePourSac, sacUpdatePourPrise } from '../lib/batchOps.js'
 import EcartBadge from '../components/EcartBadge.jsx'
 import Modal from '../components/Modal.jsx'
@@ -328,7 +328,6 @@ export default function BatchEnCours() {
     const coutBatch = calcCout(lignesEnrichies)
     const masseBatch = lignesEnrichies.reduce((s, l) => s + l.masse_totale_kg, 0)
     const coutT = masseBatch > 0 ? Math.round(coutBatch / masseBatch * 1000) : 0
-    const r1 = v => Math.round((v ?? 0) * 10) / 10
 
     const mpId = `MP_REC_${batch.id}`
     const { error: mpErr } = await supabase.from('matieres_premieres').upsert({
@@ -337,10 +336,7 @@ export default function BatchEnCours() {
       type_appro: 'Interne',
       description: `Batch récupéré : ${batch.nom}`,
       cout_par_tonne: coutT,
-      pct_pp: r1(comp.pp), pct_pe: r1(comp.pe), pct_alu: r1(comp.alu),
-      pct_autres: r1(comp.autres), pct_autres_plastiques: r1(comp.autresPlast),
-      pct_blanc: r1(comp.blanc), pct_transparent: r1(comp.transp), pct_noir: r1(comp.noir),
-      pct_autres_couleurs: r1(comp.autresCoul), pct_sable: r1(comp.ecoLithe), pct_charge_minerale: r1(comp.chargeMin),
+      ...compositionVersMp(comp),
       recettes_autorisees: recupForm.recettes,
     }, { onConflict: 'id' })
     if (mpErr) { alert(`Erreur : la matière récupérée n'a pas pu être créée.\n${mpErr.message}`); return }
@@ -486,17 +482,7 @@ export default function BatchEnCours() {
       type_appro: 'Interne',
       description: `Reste non utilisé du batch ${batch.nom}`,
       cout_par_tonne: coutReste,
-      pct_pp:                Math.round(comp.pp          * 10) / 10,
-      pct_pe:                Math.round(comp.pe          * 10) / 10,
-      pct_alu:               Math.round(comp.alu         * 10) / 10,
-      pct_autres:            Math.round(comp.autres      * 10) / 10,
-      pct_autres_plastiques: Math.round(comp.autresPlast * 10) / 10,
-      pct_blanc:             Math.round(comp.blanc       * 10) / 10,
-      pct_transparent:       Math.round(comp.transp      * 10) / 10,
-      pct_noir:              Math.round(comp.noir        * 10) / 10,
-      pct_autres_couleurs:   Math.round(comp.autresCoul  * 10) / 10,
-      pct_sable:             Math.round(comp.ecoLithe    * 10) / 10,
-      pct_charge_minerale:   Math.round(comp.chargeMin   * 10) / 10,
+      ...compositionVersMp(comp),
     }, { onConflict: 'id' })
     if (mpErr) {
       alert(`Erreur : la MP "Reste batch" n'a pas pu être créée.\n${mpErr.message}`)
