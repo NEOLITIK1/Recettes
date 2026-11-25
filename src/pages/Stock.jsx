@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase.js'
-import { effectiveMp } from '../lib/calculs.js'
+import { mpDuSac } from '../lib/calculs.js'
 import Modal from '../components/Modal.jsx'
 import TooltipMp from '../components/TooltipMp.jsx'
 import VueParMatiere from '../components/VueParMatiere.jsx'
@@ -8,7 +8,7 @@ import SearchableSelect from '../components/SearchableSelect.jsx'
 import BarreRecherche from '../components/BarreRecherche.jsx'
 import PlanStock from '../components/PlanStock.jsx'
 import { correspond } from '../lib/recherche.js'
-import { MAX_PILE, lieuSac, optionsRangement, idsASortir, fusionnerSacs } from '../lib/plan.js'
+import { MAX_PILE, lieuSac, optionsRangement, idsASortir, fusionnerSacs, correspondLieu } from '../lib/plan.js'
 
 const STATUT_STYLES = {
   disponible: 'bg-emerald-50 text-emerald-700',
@@ -29,7 +29,7 @@ const COMPO_KEYS = [
 // Un sac du lot. rangement : '' = hors plan (emplacement libre), 'R:A' = rangée A,
 // 'S:<id>' = sur la pile d'un sac existant
 function newLigne() {
-  return { masse_kg: '', reference: '', taille: 'grand', rangement: '', emplacement: '', commentaire: '' }
+  return { masse_kg: '', reference: '', taille: 'grand', rangement: '', emplacement: '', commentaire: '', prix_tonne: '' }
 }
 
 // Champs communs à un lot + une liste de sacs (masse/réf/emplacement/commentaire par sac)
@@ -55,6 +55,7 @@ export default function Stock() {
   const [editId, setEditId] = useState(null)
   const [filtre, setFiltre] = useState('stock')
   const [recherche, setRecherche] = useState('')
+  const [rechercheLieu, setRechercheLieu] = useState('')
   const [showCompoOverride, setShowCompoOverride] = useState(false)
 
   // Scindage d'un sac en plusieurs sacs réels (ex: batch récupéré puis pesé)
@@ -125,6 +126,7 @@ export default function Stock() {
         rangement: sac.rangee ? `R:${sac.rangee}` : '',
         emplacement: sac.emplacement ?? '',
         commentaire: sac.commentaire ?? '',
+        prix_tonne: sac.prix_tonne ?? '',
       }],
     })
     setEditId(sac.id)
@@ -154,7 +156,16 @@ export default function Stock() {
     ]
   }
   function ajouterLigneSac() {
-    setForm(p => ({ ...p, lignes: [...p.lignes, { ...newLigne(), taille: p.lignes[p.lignes.length - 1]?.taille ?? 'grand', rangement: (p.lignes[p.lignes.length - 1]?.rangement ?? '').startsWith('R:') ? p.lignes[p.lignes.length - 1].rangement : '' }] }))
+    // Reprend taille, rangée et prix du sac précédent
+    setForm(p => {
+      const prec = p.lignes[p.lignes.length - 1] ?? newLigne()
+      return { ...p, lignes: [...p.lignes, {
+        ...newLigne(),
+        taille: prec.taille,
+        rangement: prec.rangement.startsWith('R:') ? prec.rangement : '',
+        prix_tonne: prec.prix_tonne,
+      }] }
+    })
   }
   function supprimerLigneSac(i) {
     setForm(p => ({ ...p, lignes: p.lignes.filter((_, idx) => idx !== i) }))
@@ -164,6 +175,8 @@ export default function Stock() {
     if (!form.mp_id) { alert('Sélectionnez une matière première.'); return }
     const lignesValides = form.lignes.filter(l => parseFloat(l.masse_kg) > 0)
     if (lignesValides.length === 0) { alert('Renseignez au moins un sac avec une masse.'); return }
+
+    if (lignesValides.some(l => l.prix_tonne !== '' && !(parseFloat(l.prix_tonne) >= 0))) { alert('Prix invalide.'); return }
 
     const commun = {
       mp_id: form.mp_id,
@@ -179,6 +192,7 @@ export default function Stock() {
       reference: l.reference || null,
       emplacement: l.rangement ? null : (l.emplacement || null),
       commentaire: l.commentaire || null,
+      prix_tonne: l.prix_tonne === '' ? null : parseFloat(l.prix_tonne),
     })
 
     setSaving(true)
@@ -289,6 +303,7 @@ export default function Stock() {
       taille: sac.taille ?? 'grand',
       emplacement: sac.emplacement ?? null,
       composition_override: sac.composition_override ?? null,
+      prix_tonne: sac.prix_tonne ?? null,
     }))
     const { error } = await supabase.from('sacs').insert(nouveaux)
     if (error) { alert(`Erreur lors de la création des sacs.\n${error.message}`); return }
@@ -331,14 +346,19 @@ export default function Stock() {
     const okFiltre =
       filtre === 'tous' ? true
       : filtre === 'alertes' ? (mpsEnAlerteIds.has(s.mp_id) && s.statut !== 'consomme')
-      : filtre === 'stock' ? s.statut !== 'consomme' // disponibles + partiels ensemble
+      : filtre === 'stock' ? (
+          s.statut !== 'consomme' // disponibles + partiels ensemble
+          || (rechercheLieu.trim() && s.rangee) // vidé mais encore à sa place (à sortir)
+        )
       : s.statut === filtre
+    if (rechercheLieu.trim() && !correspondLieu(rechercheLieu, s)) return false
     return okFiltre && correspond(recherche,
       getMpNom(s.mp_id), s.mp_id, s.reference, s.fournisseur,
       s.numero_lot_fournisseur, lieuSac(s), s.commentaire)
   })
 
   // Totaux des sacs affichés, détaillés par matière (ex: "PP Blanc Berry : 3 sacs, 2,4 t")
+  const libelleRecherche = [recherche.trim(), rechercheLieu.trim() && `📍 ${rechercheLieu.trim()}`].filter(Boolean).join(' + ')
   const totalAffichesKg = sacsAffiches.reduce((a, s) => a + (s.masse_kg ?? 0), 0)
   const parMatiere = Object.values(sacsAffiches.reduce((acc, s) => {
     const e = acc[s.mp_id] ?? (acc[s.mp_id] = { mpId: s.mp_id, nom: getMpNom(s.mp_id), nb: 0, kg: 0 })
@@ -422,17 +442,24 @@ export default function Stock() {
         <BarreRecherche
           value={recherche}
           onChange={setRecherche}
-          placeholder="Matière, référence, fournisseur, lot, emplacement…"
+          placeholder="Matière, référence, fournisseur, lot…"
           className="flex-1 min-w-[240px] sm:ml-auto sm:max-w-md"
+        />
+        <BarreRecherche
+          value={rechercheLieu}
+          onChange={setRechercheLieu}
+          icone="📍"
+          placeholder="Place : A, A4, atelier…"
+          className="w-full sm:w-60"
         />
       </div>
 
       {/* Totaux des résultats (nombre de sacs + tonnage, par matière) */}
-      {!loading && recherche.trim() && sacsAffiches.length > 0 && (
+      {!loading && libelleRecherche && sacsAffiches.length > 0 && (
         <div className="bg-blue-50 border border-blue-100 rounded-xl p-4 mb-4">
           <p className="text-sm text-blue-900">
             <strong>{sacsAffiches.length} sac{sacsAffiches.length !== 1 ? 's' : ''}</strong> · <strong>{fmtKg(totalAffichesKg)}</strong>
-            <span className="text-blue-700/80"> pour « {recherche.trim()} »</span>
+            <span className="text-blue-700/80"> pour « {libelleRecherche} »</span>
           </p>
           {parMatiere.length > 1 && (
             <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1">
@@ -451,7 +478,7 @@ export default function Stock() {
         {loading ? (
           <p className="text-sm text-gray-400 text-center p-8">Chargement…</p>
         ) : sacsAffiches.length === 0 ? (
-          <p className="text-sm text-gray-400 text-center p-8">{recherche.trim() ? `Aucun sac ne correspond à « ${recherche.trim()} ».` : 'Aucun sac dans cette catégorie.'}</p>
+          <p className="text-sm text-gray-400 text-center p-8">{libelleRecherche ? `Aucun sac ne correspond à « ${libelleRecherche} ».` : 'Aucun sac dans cette catégorie.'}</p>
         ) : (
           <table className="w-full text-sm">
             <thead>
@@ -473,11 +500,14 @@ export default function Stock() {
                     <td className="px-4 py-3 font-mono text-xs text-gray-400">{sac.reference || '—'}</td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
-                        <TooltipMp mp={effectiveMp(mpById[sac.mp_id], sac.composition_override)}>
+                        <TooltipMp mp={mpDuSac(mpById[sac.mp_id], sac)}>
                           <span className="text-gray-900 cursor-default">{getMpNom(sac.mp_id)}</span>
                         </TooltipMp>
                         {sac.composition_override && (
                           <span title="Composition spécifique au sac" className="text-xs bg-purple-50 text-purple-700 px-1.5 py-0.5 rounded">spéc.</span>
+                        )}
+                        {sac.prix_tonne != null && (
+                          <span title="Prix spécifique au sac" className="text-xs bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded whitespace-nowrap">{sac.prix_tonne} €/t</span>
                         )}
                         {enAlerte && (
                           <span className="text-xs text-amber-700">⚠</span>
@@ -557,7 +587,7 @@ export default function Stock() {
                   {contenu.map(s => (
                     <div key={s.id} className="flex items-center justify-between gap-3 px-3 py-2">
                       <div className="text-sm">
-                        <TooltipMp mp={effectiveMp(mpById[s.mp_id], s.composition_override)}>
+                        <TooltipMp mp={mpDuSac(mpById[s.mp_id], s)}>
                           <span className="text-gray-900 cursor-default">{getMpNom(s.mp_id)}</span>
                         </TooltipMp>
                         <p className="text-xs text-gray-500">
@@ -586,7 +616,7 @@ export default function Stock() {
                         value={placement.sacId}
                         onChange={v => setPlacement(p => ({ ...p, sacId: v, taille: sacsHorsPlan.find(s => s.id === v)?.taille === 'petit' ? 'petit' : p.taille }))}
                         placeholder="Rechercher un sac hors plan…"
-                        tooltipMp={(() => { const s = sacsHorsPlan.find(x => x.id === placement.sacId); return s ? effectiveMp(mpById[s.mp_id], s.composition_override) : null })()}
+                        tooltipMp={(() => { const s = sacsHorsPlan.find(x => x.id === placement.sacId); return s ? mpDuSac(mpById[s.mp_id], s) : null })()}
                         options={sacsHorsPlan.map(s => ({
                           value: s.id,
                           label: [getMpNom(s.mp_id), s.reference || (s.numero_lot_fournisseur && `N°${s.numero_lot_fournisseur}`), `${Math.round(s.masse_kg)} kg`, s.fournisseur, s.emplacement && `📍${s.emplacement}`].filter(Boolean).join(' · '),
@@ -718,7 +748,7 @@ export default function Stock() {
           <div className="pt-3 border-t border-gray-100">
             <div className="flex items-center justify-between mb-2">
               <p className="text-xs font-medium text-gray-700">
-                {editId ? 'Sac' : 'Sacs'} <span className="text-gray-400 font-normal">(masse, réf., emplacement et commentaire par sac)</span>
+                {editId ? 'Sac' : 'Sacs'} <span className="text-gray-400 font-normal">(masse, réf., emplacement, prix et commentaire par sac)</span>
               </p>
               {!editId && (
                 <button onClick={ajouterLigneSac} className="text-xs px-2 py-1 border border-gray-200 rounded hover:bg-gray-50">+ Sac (même matière)</button>
@@ -753,7 +783,13 @@ export default function Stock() {
                       <SearchableSelect value={l.rangement} onChange={v => majLigneSac(i, 'rangement', v)} options={choixRangement(l)} />
                     </div>
                   </div>
-                  <div className={`grid gap-2 ${l.rangement ? '' : 'grid-cols-2'}`}>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-xs text-gray-500 mb-0.5">Prix (€/t)</label>
+                      <input type="number" min="0" step="any" value={l.prix_tonne} onChange={e => majLigneSac(i, 'prix_tonne', e.target.value)}
+                        placeholder={mpById[form.mp_id] ? `${mpById[form.mp_id].cout_par_tonne ?? 0} (prix matière)` : 'prix de la matière'}
+                        className="w-full text-sm border border-gray-200 rounded-lg px-2 py-1.5 bg-white" />
+                    </div>
                     {!l.rangement && (
                       <div>
                         <label className="block text-xs text-gray-500 mb-0.5">Emplacement libre</label>
@@ -761,7 +797,7 @@ export default function Stock() {
                           placeholder="ex: atelier, extérieur…" className="w-full text-sm border border-gray-200 rounded-lg px-2 py-1.5 bg-white" />
                       </div>
                     )}
-                    <div>
+                    <div className={l.rangement ? '' : 'col-span-2'}>
                       <label className="block text-xs text-gray-500 mb-0.5">Commentaire</label>
                       <input value={l.commentaire} onChange={e => majLigneSac(i, 'commentaire', e.target.value)}
                         placeholder="ex: humide, à contrôler…" className="w-full text-sm border border-gray-200 rounded-lg px-2 py-1.5 bg-white" />

@@ -1,5 +1,5 @@
 import { supabase } from './supabase.js'
-import { effectiveMp, snapshotComposition } from './calculs.js'
+import { effectiveMp, calcCout, snapshotComposition } from './calculs.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Opérations batch ↔ stock partagées (Optimiseur, Manuel, BatchEnCours, Historique)
@@ -99,6 +99,19 @@ export async function ajusterMasseLigne(ligneId, masse, mode = null) {
 export async function sortirSacsBatch(batchId) {
   const { data, error } = await supabase.rpc('sortir_sacs_batch', { p_batch_id: batchId })
   return { error, sortis: data?.sortis ?? 0, rangees: data?.rangees ?? [] }
+}
+
+// Recalcule le coût enregistré d'un batch après modification de ses lignes
+export async function recalculerCoutBatch(batchId, mpsMap) {
+  const { data: lignes, error } = await supabase.from('batch_lignes').select('*').eq('batch_id', batchId)
+  if (error) return
+  const enrichies = (lignes ?? []).map(l => ({ mp: effectiveMp(mpsMap[l.mp_id], l.composition_snapshot), masse_totale_kg: l.masse_totale_kg }))
+  const masse = enrichies.reduce((s, l) => s + (l.masse_totale_kg ?? 0), 0)
+  const cout = calcCout(enrichies)
+  await supabase.from('batches').update({
+    cout_total_eur: Math.round(cout),
+    cout_par_tonne_eur: masse > 0 ? Math.round(cout / masse * 1000) : 0,
+  }).eq('id', batchId)
 }
 
 // Une ligne (ou un batch) est restaurable si au moins une ligne trace ses sacs sources

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase.js'
-import { calcComposition, calcCout, fmt1, effectiveMp, COMP_PARAMS_FULL, codificationBatch } from '../lib/calculs.js'
+import { calcComposition, calcCout, fmt1, mpDuSac, COMP_PARAMS_FULL, codificationBatch } from '../lib/calculs.js'
 import { creerBatchAvecStock, lignePourSac, sacUpdatePourPrise } from '../lib/batchOps.js'
 import EcartBadge from '../components/EcartBadge.jsx'
 import TooltipMp from '../components/TooltipMp.jsx'
@@ -66,7 +66,7 @@ function optimiser(sacsDispo, mpsMap, recette, masseCible, sacsForces = [], seed
     const taken = (!demande || demande <= 0) ? masseSac : Math.min(demande, masseSac)
     selectionForcee.push({
       sac,
-      mp: effectiveMp(mpsMap[sac.mp_id], sac.composition_override),
+      mp: mpDuSac(mpsMap[sac.mp_id], sac),
       taken,
       partial: taken < masseSac,
       forced: true,
@@ -81,13 +81,11 @@ function optimiser(sacsDispo, mpsMap, recette, masseCible, sacsForces = [], seed
   if (masseRestante <= 0) return selectionForcee
 
   // Helper : composition effective d'un sac (override prime sur MP)
-  function mpDuSac(sac) {
-    return effectiveMp(mpsMap[sac.mp_id], sac.composition_override)
-  }
+  const mpDe = sac => mpDuSac(mpsMap[sac.mp_id], sac)
 
   // 2. Score d'un sac dans le contexte d'une sélection en cours
   function scoreSac(sac, selectionActuelle, idx) {
-    const mp = mpDuSac(sac)
+    const mp = mpDe(sac)
     if (!mp) return Infinity
 
     // Distance compositionnelle plastiques
@@ -265,7 +263,7 @@ function optimiser(sacsDispo, mpsMap, recette, masseCible, sacsForces = [], seed
     let meilleurScore = ecartActuel
 
     for (const sac of sacsDuPool) {
-      const mp = mpDuSac(sac)
+      const mp = mpDe(sac)
       if (!mp) continue
 
       const masseRestanteDuSac = sacsParId.get(sac.id) ?? 0
@@ -441,7 +439,7 @@ export default function Optimiseur() {
     if (!sac) return
     majSelection(sel => [...sel, {
       sac,
-      mp: effectiveMp(mpsMap[sac.mp_id], sac.composition_override),
+      mp: mpDuSac(mpsMap[sac.mp_id], sac),
       taken: sac.masse_kg ?? 0,
       partial: false,
       forced: false,
@@ -740,7 +738,7 @@ export default function Optimiseur() {
                   onChange={v => majSacForce(i, 'sacId', v)}
                   placeholder="Rechercher un sac…"
                   className="flex-1 min-w-[220px]"
-                  tooltipMp={sacChoisi ? effectiveMp(mpsMap[sacChoisi.mp_id], sacChoisi.composition_override) : null}
+                  tooltipMp={sacChoisi ? mpDuSac(mpsMap[sacChoisi.mp_id], sacChoisi) : null}
                   options={sacsDeLaMatiere.map(s => ({ value: s.id, label: `${mpsMap[s.mp_id]?.nom ?? s.mp_id} · ${labelSacOpt(s)}` }))}
                 />
                 {/* 3. Masse à prélever (compteur kg, partiel possible) */}

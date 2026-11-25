@@ -93,13 +93,15 @@ export default function Historique() {
       if (avis) alert(avis)
       for (const ligne of lignesSansTracking) {
         if (!ligne.mp_id || !ligne.masse_totale_kg) continue
+        const { cout_par_tonne: prixFige, ...compoFigee } = ligne.composition_snapshot ?? {}
         const { error } = await supabase.from('sacs').insert({
           mp_id: ligne.mp_id,
           masse_kg: ligne.masse_totale_kg,
           reference: `Récupéré-${batch.id}`,
           statut: 'disponible',
           // Préserver la composition figée de la ligne si elle existait
-          composition_override: ligne.composition_snapshot ?? null,
+          composition_override: ligne.composition_snapshot ? compoFigee : null,
+          ...(prixFige != null ? { prix_tonne: prixFige } : {}),
         })
         if (error) alert(`Erreur : le sac "${ligne.mp_id}" n'a pas pu être recréé en stock.\n${error.message}`)
       }

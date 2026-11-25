@@ -1,4 +1,8 @@
+import { useState, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import { RANGEES, PROFONDEUR_MAX, MAX_PILE, construirePlan, statsPlan } from '../lib/plan.js'
+import { mpDuSac } from '../lib/calculs.js'
+import { FicheMp } from './TooltipMp.jsx'
 
 // Récap chiffré des places libres (page Stock et tableau de bord)
 export function RecapPlaces({ stats }) {
@@ -22,19 +26,49 @@ export function RecapPlaces({ stats }) {
   )
 }
 
+// Fenêtre au survol d'une case : composition de chaque sac (le haut de pile en premier)
+const LARGEUR_FICHE = 224
+function FenetreCase({ lieu, sacs, rect, mpById, aSortir }) {
+  const largeur = sacs.length * LARGEUR_FICHE
+  const enBas = rect.bottom + 260 < window.innerHeight
+  const style = {
+    left: Math.max(8, Math.min(rect.left, window.innerWidth - largeur - 8)),
+    maxWidth: 'calc(100vw - 16px)',
+    ...(enBas ? { top: rect.bottom + 4 } : { bottom: window.innerHeight - rect.top + 4 }),
+  }
+  return (
+    <div style={style} className="fixed z-50 flex bg-white border border-gray-200 rounded-lg shadow-lg divide-x divide-gray-100 pointer-events-none">
+      {[...sacs].reverse().map(s => {
+        const mp = mpDuSac(mpById[s.mp_id], s)
+        return (
+          <div key={s.id} style={{ width: LARGEUR_FICHE }} className="p-3 min-w-0">
+            <p className="text-[11px] text-gray-400 mb-1">
+              {lieu}{sacs.length > 1 ? ` · niveau ${s.niveau}` : ''} · {(s.masse_kg ?? 0) > 0 ? `${Math.round(s.masse_kg)} kg` : 'vidé'}
+              {aSortir.has(s.id) ? ' · à sortir' : ''}
+            </p>
+            {mp ? <FicheMp mp={mp} /> : <p className="text-xs text-gray-500">{s.mp_id}</p>}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 // Carte du stock. Grand sac = case blanche, petits = nombre de sacs, gris = à sortir.
 export default function PlanStock({ sacs, mpById, aSortir, onCase }) {
   const plan = construirePlan(sacs)
   const stats = statsPlan(sacs)
   const libresParRangee = Object.fromEntries(stats.parRangee.map(r => [r.code, r]))
 
-  const titre = (code, i, c) => {
-    const lieu = `${code}${i + 1}`
-    if (!c) return `${lieu} — libre`
-    const details = c.sacs.map(s =>
-      `${mpById[s.mp_id]?.nom ?? s.mp_id}${s.reference ? ` · ${s.reference}` : ''} — ${(s.masse_kg ?? 0) > 0 ? `${Math.round(s.masse_kg)} kg` : 'vidé, à sortir'}`)
-    return [lieu, ...details].join('\n')
-  }
+  // Case survolée : { lieu, sacs, rect }. La fenêtre est affichée hors de la carte
+  // (qui défile horizontalement et la couperait).
+  const [survol, setSurvol] = useState(null)
+  useEffect(() => {
+    if (!survol) return
+    const fermer = () => setSurvol(null)
+    window.addEventListener('scroll', fermer, true)
+    return () => window.removeEventListener('scroll', fermer, true)
+  }, [survol])
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-5 mb-6">
@@ -61,8 +95,10 @@ export default function PlanStock({ sacs, mpById, aSortir, onCase }) {
                 <button
                   key={r.code + i}
                   type="button"
-                  title={titre(r.code, i, c)}
-                  onClick={() => onCase(r.code, c)}
+                  aria-label={`${r.code}${i + 1}${c ? '' : ' — libre'}`}
+                  onMouseEnter={e => setSurvol(c ? { lieu: `${r.code}${i + 1}`, sacs: c.sacs, rect: e.currentTarget.getBoundingClientRect() } : null)}
+                  onMouseLeave={() => setSurvol(null)}
+                  onClick={() => { setSurvol(null); onCase(r.code, c) }}
                   className={`relative h-12 rounded border text-base font-semibold transition-colors ${
                     !c ? 'border-dashed border-gray-300 text-transparent hover:border-gray-500'
                     : reserve ? 'border-2 border-gray-900 bg-gray-400 text-gray-900 hover:bg-gray-300'
@@ -97,6 +133,8 @@ export default function PlanStock({ sacs, mpById, aSortir, onCase }) {
         <span><span className="inline-block w-4 h-3 border border-dashed border-gray-300 rounded-sm align-middle mr-1" />libre</span>
         <span>En bas : places libres, +n = petits pouvant compléter une pile</span>
       </div>
+
+      {survol && createPortal(<FenetreCase {...survol} mpById={mpById} aSortir={aSortir} />, document.body)}
     </div>
   )
 }

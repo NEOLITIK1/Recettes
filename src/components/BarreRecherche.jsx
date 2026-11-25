@@ -1,8 +1,8 @@
 // Barre de recherche pour filtrer une liste
-export default function BarreRecherche({ value, onChange, placeholder = 'Rechercher…', className = '' }) {
+export default function BarreRecherche({ value, onChange, placeholder = 'Rechercher…', className = '', icone = '🔍' }) {
   return (
     <div className={`relative ${className}`}>
-      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm pointer-events-none">🔍</span>
+      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm pointer-events-none">{icone}</span>
       <input
         value={value}
         onChange={e => onChange(e.target.value)}

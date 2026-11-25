@@ -20,13 +20,22 @@ export function effectiveMp(mp, override) {
   return { ...mp, ...override }
 }
 
-// Extrait la composition (% uniquement) d'une MP effective, pour la figer sur une
+// MP effective d'un SAC : composition (override du sac sinon MP) et prix (prix du sac
+// s'il est renseigné, sinon prix générique de la MP).
+export function mpDuSac(mp, sac) {
+  const base = effectiveMp(mp, sac?.composition_override)
+  if (!base || sac?.prix_tonne == null) return base
+  return { ...base, cout_par_tonne: sac.prix_tonne, prix_specifique: true }
+}
+
+// Extrait la composition (%) et le prix d'une MP effective, pour les figer sur une
 // ligne de batch. Garantit que l'historique ne bouge plus si la MP est modifiée
 // ou supprimée plus tard.
 export function snapshotComposition(mpEffectif) {
   if (!mpEffectif) return null
   const snap = {}
   for (const f of PCT_FIELDS) snap[f] = mpEffectif[f] ?? 0
+  snap.cout_par_tonne = mpEffectif.cout_par_tonne ?? 0
   return snap
 }
 

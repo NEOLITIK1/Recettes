@@ -4,6 +4,8 @@
 // Les positions sont calculées côté base (migration v12) : ici, lecture et affichage.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { normaliser } from './recherche.js'
+
 // Doit rester identique à capacite_rangee() dans migration-v12.sql
 export const RANGEES = [
   ...'ABCDEFGHIJK'.split('').map(code => ({ code, places: 6 })),
@@ -20,6 +22,19 @@ export function lieuSac(sac) {
   if (!sac.rangee) return sac.emplacement ?? ''
   const niveau = sac.taille === 'petit' && sac.niveau > 1 ? ` (${sac.niveau}e niveau)` : ''
   return `${sac.rangee}${sac.place}${niveau}`
+}
+
+// Recherche par emplacement : "A" = rangée A, "A4" = place A4, "hors plan", ou un bout
+// d'emplacement libre ("atelier"). Plusieurs emplacements séparés par des virgules.
+export function correspondLieu(recherche, sac) {
+  const net = s => normaliser(s).replace(/\s+/g, '')
+  const lieu = net(lieuSac(sac))
+  return recherche.split(/[,;]/).map(net).filter(Boolean).some(q => {
+    if (q === 'horsplan') return !sac.rangee
+    if (/^[a-o]$/.test(q)) return lieu.startsWith(q) && !/[a-z]/.test(lieu[1] ?? '')
+    if (/^[a-o]\d+$/.test(q)) return lieu.startsWith(q) && !/\d/.test(lieu[q.length] ?? '')
+    return lieu.includes(q)
+  })
 }
 
 // { A: [ {place, taille, sacs:[bas → haut]} | null, … ], … }

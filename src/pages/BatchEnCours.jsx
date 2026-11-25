@@ -1,10 +1,10 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase.js'
-import { calcComposition, calcCout, fmt1, effectiveMp, COMP_PARAMS_FULL, ratioProduction, compositionVersMp } from '../lib/calculs.js'
+import { calcComposition, calcCout, fmt1, effectiveMp, mpDuSac, COMP_PARAMS_FULL, ratioProduction, compositionVersMp } from '../lib/calculs.js'
 import {
   restaurerSacsConsommes, lignesRestaurables, lignePourSac, sacUpdatePourPrise,
-  ajouterSacsAuBatchAvecStock, substituerSacLigne, ajusterMasseLigne, sortirSacsBatch,
+  ajouterSacsAuBatchAvecStock, substituerSacLigne, ajusterMasseLigne, sortirSacsBatch, recalculerCoutBatch,
 } from '../lib/batchOps.js'
 import { lieuSac, idsASortir, fusionnerSacs, planImpressionHtml, PLAN_IMPRESSION_CSS } from '../lib/plan.js'
 import EcartBadge from '../components/EcartBadge.jsx'
@@ -242,6 +242,7 @@ export default function BatchEnCours() {
     }
     const { error, avis } = await ajusterMasseLigne(ligne.id, nouvelleMasse, mode ?? null)
     if (error) { alert(`La masse n'a pas été modifiée.\n${error.message}`); return }
+    await recalculerCoutBatch(ligne.batch_id, mpsMap)
     if (avis) alert(avis)
     setModalEditLigne(null)
     setEditMasse('')
@@ -265,10 +266,11 @@ export default function BatchEnCours() {
 
     const nouveauSac = sacsMap[substSacId]
     if (!nouveauSac) { alert('Sac de remplacement introuvable.'); return }
-    const nl = lignePourSac(nouveauSac, masse, ligne.ordre ?? 0, effectiveMp(mpsMap[nouveauSac.mp_id], nouveauSac.composition_override))
+    const nl = lignePourSac(nouveauSac, masse, ligne.ordre ?? 0, mpDuSac(mpsMap[nouveauSac.mp_id], nouveauSac))
     const { error, avis } = await substituerSacLigne(ligne.id, nl, nouveauSac.id, masse)
     if (error) { alert(`Le sac n'a pas été remplacé (stock inchangé).\n${error.message}`); fetchAll(); return }
     if (avis) alert(avis)
+    await recalculerCoutBatch(ligne.batch_id, mpsMap)
 
     setModalSubst(null)
     setSubstSacId('')
@@ -341,6 +343,7 @@ export default function BatchEnCours() {
     if (tracked && !await restituerOuAlerter([ligne])) return
     const { error } = await supabase.from('batch_lignes').delete().eq('id', ligne.id)
     if (error) alert(`Erreur lors de la suppression de la ligne.\n${error.message}`)
+    else await recalculerCoutBatch(ligne.batch_id, mpsMap)
     fetchAll()
   }
 
@@ -381,13 +384,14 @@ export default function BatchEnCours() {
     }
 
     const lignes = selection.map(({ sac, taken }, i) =>
-      lignePourSac(sac, taken, 99 + i, effectiveMp(mpsMap[sac.mp_id], sac.composition_override)))
+      lignePourSac(sac, taken, 99 + i, mpDuSac(mpsMap[sac.mp_id], sac)))
     const err = await ajouterSacsAuBatchAvecStock(modalAjout, lignes, selection.map(({ sac, taken }) => sacUpdatePourPrise(sac, taken)))
     if (err) {
       alert(`Erreur : impossible d'ajouter les sacs au batch (stock inchangé).\n${err.message}`)
       fetchAll()
       return
     }
+    await recalculerCoutBatch(modalAjout, mpsMap)
     setModalAjout(null)
     setAjoutPrises([])
     fetchAll()
@@ -972,7 +976,7 @@ ${planHtml}
                   onChange={v => majAjoutPrise(i, 'sacId', v)}
                   placeholder="Rechercher un sac…"
                   className="flex-1 min-w-[220px]"
-                  tooltipMp={sac ? effectiveMp(mpsMap[sac.mp_id], sac.composition_override) : null}
+                  tooltipMp={sac ? mpDuSac(mpsMap[sac.mp_id], sac) : null}
                   options={sacsStock.filter(s => s.id === p.sacId || !dejaPris.has(s.id)).map(optionSac)}
                 />
                 <input
@@ -1255,7 +1259,7 @@ ${planHtml}
                     if (s) setSubstMasse(String(Math.round(Math.min(s.masse_kg ?? 0, modalSubst.masse_totale_kg ?? 0))))
                   }}
                   placeholder="Rechercher un sac…"
-                  tooltipMp={nouveauSac ? effectiveMp(mpsMap[nouveauSac.mp_id], nouveauSac.composition_override) : null}
+                  tooltipMp={nouveauSac ? mpDuSac(mpsMap[nouveauSac.mp_id], nouveauSac) : null}
                   options={sacsStock.map(optionSac)}
                 />
               </div>

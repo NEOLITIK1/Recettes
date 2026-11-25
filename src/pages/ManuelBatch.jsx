@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase.js'
-import { calcComposition, calcCout, fmt1, effectiveMp, COMP_PARAMS_FULL, codificationBatch } from '../lib/calculs.js'
+import { calcComposition, calcCout, fmt1, mpDuSac, COMP_PARAMS_FULL, codificationBatch } from '../lib/calculs.js'
 import { creerBatchAvecStock, lignePourSac, sacUpdatePourPrise } from '../lib/batchOps.js'
 import EcartBadge from '../components/EcartBadge.jsx'
 import SuggestionsReappro from '../components/SuggestionsReappro.jsx'
@@ -117,7 +117,7 @@ export default function ManuelBatch() {
     .filter(s => s.sac && s.taken > 0)
 
   const lignesEnrichies = selection.map(({ sac, taken }) => ({
-    mp: effectiveMp(mpsMap[sac.mp_id], sac.composition_override),
+    mp: mpDuSac(mpsMap[sac.mp_id], sac),
     masse_totale_kg: taken,
   }))
   const comp = lignesEnrichies.length > 0 ? calcComposition(lignesEnrichies) : null
@@ -160,7 +160,7 @@ export default function ManuelBatch() {
       cout_total_eur: Math.round(coutTotal),
       cout_par_tonne_eur: Math.round(coutParTonne),
     }
-    const lignes = selection.map(({ sac, taken }, i) => lignePourSac(sac, taken, i, effectiveMp(mpsMap[sac.mp_id], sac.composition_override)))
+    const lignes = selection.map(({ sac, taken }, i) => lignePourSac(sac, taken, i, mpDuSac(mpsMap[sac.mp_id], sac)))
     const sacUpdates = selection.map(({ sac, taken }) => sacUpdatePourPrise(sac, taken))
 
     const err = await creerBatchAvecStock(batch, lignes, sacUpdates)
@@ -228,7 +228,7 @@ export default function ManuelBatch() {
                   onChange={v => majPrise(i, 'sacId', v)}
                   placeholder="Rechercher un sac (matière, réf., fournisseur…)"
                   className="flex-1 min-w-[280px]"
-                  tooltipMp={sac ? effectiveMp(mpsMap[sac.mp_id], sac.composition_override) : null}
+                  tooltipMp={sac ? mpDuSac(mpsMap[sac.mp_id], sac) : null}
                   options={sacs
                     .filter(s => s.id === p.sacId || !sacsDejaPris.has(s.id))
                     .map(s => ({ value: s.id, label: labelSac(s) }))}
