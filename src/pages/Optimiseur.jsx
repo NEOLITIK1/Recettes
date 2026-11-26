@@ -177,7 +177,7 @@ function optimiser(sacsDispo, mpsMap, recette, masseCible, sacsForces = [], seed
 
     selection.push({
       sac: meilleur,
-      mp: mpDuSac(meilleur),
+      mp: mpDe(meilleur),
       taken,
       partial,
       forced: false,
@@ -245,7 +245,7 @@ function optimiser(sacsDispo, mpsMap, recette, masseCible, sacsForces = [], seed
     if (idsDejaForcees.has(s.id)) return false  // déjà utilisé en forcé
     const baseMp = mpsMap[s.mp_id]
     if (!baseMp) return false
-    const mp = mpDuSac(s)
+    const mp = mpDe(s)
     // Filtre noir dans clair (sur la compo EFFECTIVE du sac)
     if ((recette.pct_noir_cible ?? 0) < 5 && (mp.pct_noir ?? 0) > 10) return false
     // Filtre recettes autorisées (sur la MP de référence, pas l'override)
